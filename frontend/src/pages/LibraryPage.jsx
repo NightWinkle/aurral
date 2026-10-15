@@ -1588,7 +1588,11 @@ function LibraryPage() {
   }, [coverItems]);
 
   const getAlbumCover = useCallback(
-    (album) => album?.coverUrl || covers[getAlbumCoverId(album)] || "",
+    (album) => {
+      const url = album?.coverUrl || covers[getAlbumCoverId(album)] || "";
+      return url.startsWith("/api/library/albums/")
+        ? buildAuthenticatedApiUrl(url.replace(/^\/api/, "")) : url;
+    },
     [covers],
   );
   const [artistHeroImage, setArtistHeroImage] = useState(null);

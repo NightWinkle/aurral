@@ -1,4 +1,6 @@
 import { noCache } from "../../../middleware/cache.js";
+import { verifyTokenAuth } from "../../../middleware/auth.js";
+import { getLibraryAlbumArtwork } from "../../../services/libraryAlbumArtwork.js";
 import {
   requireAuth,
   requireUserAccount,
@@ -45,7 +47,10 @@ function getAlbumCoverUrl(album) {
     (entry) => /^https?:\/\//i.test(entry?.remoteUrl || entry?.imageUrl || entry?.url || ""),
   );
   const source = image?.remoteUrl || image?.imageUrl || image?.url;
-  return /^https?:\/\//i.test(source || "") ? buildImageProxyUrl(source) : null;
+  if (/^https?:\/\//i.test(source || "")) return buildImageProxyUrl(source);
+  return album.available && !album.mbid && !album.releaseGroupMbid
+    ? `/api/library/albums/${encodeURIComponent(album.id)}/cover`
+    : null;
 }
 
 export const publicLibraryJsonReplacer = (key, value) =>
@@ -94,6 +99,20 @@ export function toPublicLibraryPage(page, favoriteKeys = null) {
 const LIBRARY_REFRESH_MODES = new Set(["quick", "full"]);
 
 export function registerLibraryIndex(router) {
+  router.get("/albums/:albumId/cover", async (req, res) => {
+    if (!verifyTokenAuth(req) || !req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const artwork = await getLibraryAlbumArtwork(req.params.albumId);
+      if (!artwork) return res.status(404).json({ error: "Album cover not found" });
+      res.set("Cache-Control", "private, max-age=3600");
+      return res.type("image/webp").send(artwork);
+    } catch {
+      return res.status(500).json({ error: "Failed to read album cover" });
+    }
+  });
+
   router.post("/refresh", requireAuth, (req, res) => {
     const mode = req.body?.mode ?? "quick";
     if (!LIBRARY_REFRESH_MODES.has(mode)) {

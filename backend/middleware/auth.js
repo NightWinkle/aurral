@@ -635,6 +635,7 @@ export const authMiddleware = (req, res, next) => {
       /^\/api\/library\/stream\/[^/]+$/.test(req.path) ||
       /^\/api\/library\/canonical-stream\/[^/]+\/[^/]+$/i.test(req.path) ||
       /^\/api\/library\/file-stream\/[^/]+\/[^/]+$/i.test(req.path) ||
+      (req.method === "GET" && /^\/api\/library\/albums\/[1-9]\d*\/cover$/i.test(req.path)) ||
       /^\/api\/artists\/[a-f0-9-]{36}\/stream$/i.test(req.path) ||
       /^\/api\/weekly-flow\/stream\/[^/]+$/i.test(req.path) ||
       /^\/api\/playlists\/stream\/[^/]+$/i.test(req.path) ||

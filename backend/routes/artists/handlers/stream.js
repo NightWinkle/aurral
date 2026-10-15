@@ -202,9 +202,6 @@ export function registerStream(router) {
               return;
             }
 
-            if (cover?.notFound) {
-              dbOps.setImage(mbid, "NOT_FOUND");
-            }
             sendSSE(res, "cover", { images: [] });
           } catch (e) {
             sendSSE(res, "cover", { images: [] });

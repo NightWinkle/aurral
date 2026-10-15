@@ -12,7 +12,6 @@ export const sendSSE = (res, event, data) => {
   }
 };
 
-export const pendingCoverRequests = new Map();
 export const pendingArtistRequests = new Map();
 
 export const buildArtistRequestKey = ({

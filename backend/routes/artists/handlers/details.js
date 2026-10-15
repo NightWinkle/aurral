@@ -10,6 +10,7 @@ import { cacheMiddleware } from "../../../middleware/cache.js";
 import { requireAuth } from "../../../middleware/requirePermission.js";
 import { buildArtistRequestKey, pendingArtistRequests } from "../utils.js";
 import { getArtistByMbid } from "../../../services/providers/brainzmashProvider.js";
+import { invalidateArtistImage } from "../../../services/imageService.js";
 import {
   getArtistTagPayload,
   buildArtistBase,
@@ -103,7 +104,7 @@ export function registerDetails(router) {
 
     if (!musicbrainzId && !deezerArtistId) {
       dbOps.deleteArtistOverride(mbid);
-      dbOps.deleteImage(mbid);
+      invalidateArtistImage(mbid);
       return res.json({
         mbid,
         musicbrainzId: null,
@@ -115,7 +116,7 @@ export function registerDetails(router) {
       musicbrainzId,
       deezerArtistId,
     });
-    dbOps.deleteImage(mbid);
+    invalidateArtistImage(mbid);
     return res.json(saved);
   });
 

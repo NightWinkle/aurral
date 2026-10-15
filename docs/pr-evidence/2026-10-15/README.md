@@ -8,6 +8,13 @@ contain a personal music library, credentials, or production configuration.
 - `local-artwork-before.png`: unmodified frontend cannot authenticate the local image URL.
 - `local-artwork-after.png`: decoded synthetic cover in Library.
 - `local-artwork-player.png`: decoded cover during synthetic WAV playback.
+- Track-credit candidate: `66f24acb8d8b71ce0f03edfa37823e89da6de80c`.
+- `track-credits-before.png`: upstream Library track rows replace the guest credits with Owner.
+- `track-credits-after.png`: the candidate displays Guest & Owner, Owner and Alpha from the same fixture.
+
+The track captures show the row credits. Separate browser assertions exercise
+playback, information, sorting, search, playlists, sharing, owner-based acquisition
+and restoring blocked/searching/moving acquisition activity on an album reopen.
 
 The backend regressions separately exercise real indexed files, image decoding,
 SQLite and authentication. Browser screenshots are UI evidence, not a claim of

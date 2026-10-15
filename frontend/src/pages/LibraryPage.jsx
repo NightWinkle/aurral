@@ -150,6 +150,13 @@ const pageSize = LIBRARY_PAGE_SIZE;
 
 const text = (value) => String(value || "").trim();
 
+const isAlbumArtistCredit = (track, artist) =>
+  !text(track?.artistName) || text(track.artistName).toLowerCase() === text(artist?.name).toLowerCase();
+
+// Library tracks have a performer credit, but no separate performer MBID.
+const trackArtistMbid = (track, artist) =>
+  isAlbumArtistCredit(track, artist) ? artist?.mbid || null : null;
+
 const metadataGenres = (entity) => {
   const metadata = entity?.metadata || {};
   return [metadata.genres, metadata.genre, metadata.common?.genre, metadata.tags?.genre]
@@ -747,7 +754,7 @@ function LibraryPage() {
     (track) =>
       reserveUniquePlaylistName(
         staticPlaylists,
-        `${getArtistForAlbum(getAlbumForTrack(track))?.name || track?.artistName || "Artist"} Picks`,
+        `${track?.artistName || getArtistForAlbum(getAlbumForTrack(track))?.name || "Artist"} Picks`,
       ),
     [getAlbumForTrack, getArtistForAlbum, staticPlaylists],
   );
@@ -759,10 +766,10 @@ function LibraryPage() {
           const album = getAlbumForTrack(track, lookup?.albumsById);
           const artist = getArtistForAlbum(album, lookup?.artistsById);
           return buildStaticPlaylistTrackPayload({
-            artistName: artist?.name || track?.artistName || "",
+            artistName: track?.artistName || artist?.name || "",
             trackName: track?.title || "",
             albumName: album?.title || "",
-            artistMbid: artist?.mbid || "",
+            artistMbid: trackArtistMbid(track, artist) || "",
             albumMbid: album?.releaseGroupMbid || album?.mbid || "",
             trackMbid: track?.mbid || "",
             releaseYear: yearOf(album?.releaseDate),
@@ -1119,7 +1126,8 @@ function LibraryPage() {
             {
               ...track,
               albumName: album?.title,
-              artistName: artist?.name || track.artistName,
+              artistName: track.artistName || artist?.name,
+              albumArtist: artist?.name || album?.albumArtist,
             },
             normalizedQuery,
           )
@@ -1191,7 +1199,8 @@ function LibraryPage() {
             {
               ...track,
               albumName: album?.title,
-              artistName: artist?.name || track.artistName,
+              artistName: track.artistName || artist?.name,
+              albumArtist: artist?.name || album?.albumArtist,
             },
             normalizedQuery,
           )
@@ -1228,8 +1237,8 @@ function LibraryPage() {
     const items = [...filteredTracks];
     items.sort((left, right) => {
       if (sortMode === "artist") {
-        return text(getArtistForAlbum(getAlbumForTrack(left))?.name).localeCompare(
-          text(getArtistForAlbum(getAlbumForTrack(right))?.name),
+        return text(left.artistName || getArtistForAlbum(getAlbumForTrack(left))?.name).localeCompare(
+          text(right.artistName || getArtistForAlbum(getAlbumForTrack(right))?.name),
         );
       }
       return text(left.title).localeCompare(text(right.title));
@@ -1520,7 +1529,8 @@ function LibraryPage() {
       const request = activeRequests.find(
         (candidate) =>
           sameTrackText(candidate.trackName, track.title) &&
-          sameTrackText(candidate.artistName, track.artistName || libraryAlbum.albumArtist) &&
+          sameTrackText(candidate.artistName,
+            getArtistForAlbum(libraryAlbum)?.name || libraryAlbum.albumArtist || track.artistName) &&
           (!candidate.albumName || sameTrackText(candidate.albumName, libraryAlbum.title)),
       );
       if (request?.jobId) {
@@ -1545,7 +1555,7 @@ function LibraryPage() {
       });
       return next;
     });
-  }, [activityQuery.data, getAlbumTracks, isPreviewLibrary, libraryAlbum, library.tracks]);
+  }, [activityQuery.data, getAlbumTracks, getArtistForAlbum, isPreviewLibrary, libraryAlbum, library.tracks]);
 
   useDocumentTitle(
     isDetail
@@ -1608,7 +1618,7 @@ function LibraryPage() {
       return {
         id: track.id,
         title: track.title,
-        artist: artist?.name || track.artistName || "Unknown Artist",
+        artist: track.artistName || artist?.name || "Unknown Artist",
         album: album?.title || track.albumName || track.album || "Unknown Album",
         src:
           file?.previewUrl ||
@@ -1619,7 +1629,7 @@ function LibraryPage() {
             : ""),
         streamFormat: file?.format || null,
         quality: file?.quality || null,
-        artistMbid: artist?.mbid || null,
+        artistMbid: trackArtistMbid(track, artist),
         albumMbid: album?.releaseGroupMbid || album?.mbid || null,
         trackMbid: track.mbid || track.trackMbid || null,
         libraryTrackId: file && album ? track.id : null,
@@ -1878,7 +1888,8 @@ function LibraryPage() {
       );
       return;
     }
-    const artistName = artist?.name || entity.artistName || entity.albumArtist || album?.albumArtist;
+    const artistName = (kind === "track" && entity.artistName)
+      || artist?.name || entity.artistName || entity.albumArtist || album?.albumArtist;
     const item =
       kind === "album"
         ? {
@@ -1895,7 +1906,7 @@ function LibraryPage() {
             libraryAlbumId: album?.id,
             trackMbid: entity.mbid || entity.trackMbid,
             albumMbid: album?.releaseGroupMbid || album?.mbid,
-            artistMbid: artist?.mbid,
+            artistMbid: trackArtistMbid(entity, artist),
             title: entity.title,
             artistName,
             albumTitle: album?.title,
@@ -2074,7 +2085,7 @@ function LibraryPage() {
         const active =
           String(currentTrack?.id) === String(track.id) &&
           matchesSource(librarySource);
-        const artistName = artist?.name || track.artistName || "Unknown Artist";
+        const artistName = track.artistName || artist?.name || "Unknown Artist";
         const albumName = album?.title || track.albumName || track.album || "Unknown Album";
         const trackNumber = track.albums?.find(
           (entry) => String(entry.albumId) === String(album?.id),
@@ -2161,7 +2172,7 @@ function LibraryPage() {
             </span>
           ) : null,
           subtitle: artistName,
-          artist: { label: artistName, to: libraryArtistPath(artist) },
+          artist: { label: artistName, to: isAlbumArtistCredit(track, artist) ? libraryArtistPath(artist) : null },
           album: { label: albumName, to: libraryAlbumPath(album) },
           cover: {
             src: album ? getAlbumCover(album) : "",

@@ -2111,7 +2111,8 @@ function buildPageQuery({
     orderBy = recentMediaOrder(kind, sourceFilter, availableOnly, direction);
     orderBy += kind === "albums" ? ", album.id" : kind === "artists" ? ", artist.id" : ", track.id";
   } else if (sort === "artist" && kind !== "artists") {
-    orderBy = `artist.name COLLATE NOCASE ${orderDirection}, ${kind === "albums" ? "album.title" : "track.title"} COLLATE NOCASE ${orderDirection}`;
+    const artistName = kind === "tracks" ? "coalesce(nullif(track.artist_name, ''), artist.name)" : "artist.name";
+    orderBy = `${artistName} COLLATE NOCASE ${orderDirection}, ${kind === "albums" ? "album.title" : "track.title"} COLLATE NOCASE ${orderDirection}`;
     if (kind === "albums") orderBy += ", album.id";
     else orderBy += ", track.id";
   } else if (kind === "artists") {
@@ -2228,7 +2229,7 @@ function buildAlbumTrackPageQuery(
     : sort === "newest"
       ? recentMediaOrder("tracks", sourceFilter, false, direction)
     : sort === "artist"
-      ? `artist.name COLLATE NOCASE ${orderDirection}, track.title COLLATE NOCASE ${orderDirection}`
+      ? `coalesce(nullif(track.artist_name, ''), artist.name) COLLATE NOCASE ${orderDirection}, track.title COLLATE NOCASE ${orderDirection}`
       : `track.title COLLATE NOCASE ${orderDirection}`;
   return {
     from: `FROM library_tracks AS track

@@ -737,7 +737,7 @@ export function buildPlaybackQueueFromLibrary({ artists = [], albums = [], track
       queue.push({
         id: `lib-${album.artistId}-${album.id}-${track.id}`,
         title: track.title || "Unknown Track",
-        artist: artist?.name || track.artistName || "Unknown Artist",
+        artist: track.artistName || artist?.name || "Unknown Artist",
         album: album.title || "Unknown Album",
         streamPath: `/library/canonical-stream/${encodeURIComponent(album.id)}/${encodeURIComponent(track.id)}`,
         streamFormat: file.format || null,

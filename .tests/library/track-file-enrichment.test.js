@@ -7,14 +7,14 @@ import {
   albumNeedsTrackFiles,
 } from "../../backend/services/libraryManager.js";
 
-test("buildPlaybackQueueFromLibrary uses indexed files without Lidarr reads", () => {
+test("buildPlaybackQueueFromLibrary keeps the performer credit and uses indexed files without Lidarr reads", () => {
   const queue = buildPlaybackQueueFromLibrary({
     artists: [{ id: 1, name: "Artist" }],
     albums: [{ id: 603, artistId: 1, title: "Album", trackIds: [7] }],
     tracks: [{
       id: 7,
       title: "Track",
-      artistName: "Artist",
+      artistName: "Guest & Artist",
       albums: [{ albumId: 603, trackNumber: 4 }],
       files: [{ albumId: 603, source: "lidarr", available: true, format: "flac" }],
     }],
@@ -23,7 +23,7 @@ test("buildPlaybackQueueFromLibrary uses indexed files without Lidarr reads", ()
   assert.deepEqual(queue, [{
     id: "lib-1-603-7",
     title: "Track",
-    artist: "Artist",
+    artist: "Guest & Artist",
     album: "Album",
     streamPath: "/library/canonical-stream/603/7",
     streamFormat: "flac",

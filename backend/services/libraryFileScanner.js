@@ -32,7 +32,6 @@ import {
 } from "./libraryManagementStore.js";
 import { readAurralIdentity } from "./downloadUtils.js";
 import { logger, safeLogDiagnostic } from "./logger.js";
-import { isVariousArtistsCredit } from "./trackMatching/titleText.js";
 
 const AUDIO_EXTENSIONS = new Set([
   ".aac",
@@ -165,7 +164,7 @@ function buildMetadataRecord(metadata, filePath, rootPath) {
     albumName,
     trackKey,
     trackMbid,
-    trackArtistName: isVariousArtistsCredit(artistName, artistMbid) ? text(common.artist) || artistName : artistName,
+    trackArtistName: text(common.artist) || artistName,
     title,
     trackNumber,
     discNumber,
@@ -385,6 +384,7 @@ export async function scanMusicRoot({
             ? await metadataEnricher(metadata, filePath)
             : null;
           const enrichedMetadata = applyMetadataEnrichment(metadata, enrichment);
+          const common = normalizeMetadata(enrichedMetadata);
           const downloadedByAurral =
             Boolean(enrichment) || Object.keys(readEmbeddedAurralIdentity(metadata)).length > 0;
           const record = buildMetadataRecord(enrichedMetadata, filePath, resolvedRoot);
@@ -429,17 +429,17 @@ export async function scanMusicRoot({
             syncSearch,
           });
           if (source === "aurral") claimUnownedAlbum(album);
-          const track = (trackKey !== record.trackKey
-            && db.prepare("SELECT * FROM library_tracks WHERE identity_key = ?").get(trackKey))
-            || upsertLibraryTrack({
-              identityKey: record.trackKey,
-              mbid: record.trackMbid,
-              title: record.title,
-              artistName: record.trackArtistName,
-              metadata: record.trackMetadata,
-              monitored: source !== "aurral" || downloadedByAurral,
-              syncSearch,
-            });
+          let listedMetadata = null;
+          try { listedMetadata = JSON.parse(listedTrack?.metadata_json || "null"); } catch {}
+          const track = upsertLibraryTrack({
+            identityKey: trackKey,
+            mbid: listedTrack?.mbid || record.trackMbid,
+            title: trackKey !== record.trackKey ? listedTrack.title : record.title,
+            artistName: text(common.artist) || listedTrack?.artist_name || record.trackArtistName,
+            metadata: { ...listedMetadata, ...record.trackMetadata },
+            monitored: source !== "aurral" || downloadedByAurral,
+            syncSearch,
+          });
           linkLibraryAlbumTrack({
             albumId: album.id,
             trackId: track.id,

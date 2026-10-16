@@ -787,9 +787,9 @@ export function getLibraryTrackOwnership({
     const artist = String(artistName || "").trim();
     const title = String(trackName || "").trim();
     if (!artist || !title) return false;
-    conditions.push("lower(coalesce(track.artist_name, '')) = lower(?)");
+    conditions.push("(lower(coalesce(track.artist_name, '')) = lower(?) OR lower(artist.name) = lower(?))");
     conditions.push("lower(track.title) = lower(?)");
-    parameters.push(artist, title);
+    parameters.push(artist, artist, title);
   }
 
   return Boolean(db.prepare(
@@ -848,12 +848,13 @@ export function getLibraryTrackOwnershipBatch(tracks, { source = null } = {}) {
         parameters.push(reference.value);
         return "track.mbid = ?";
       }
-      parameters.push(reference.artistName, reference.trackName);
-      return "(lower(coalesce(track.artist_name, '')) = lower(?) AND lower(track.title) = lower(?))";
+      parameters.push(reference.artistName, reference.artistName, reference.trackName);
+      return "((lower(coalesce(track.artist_name, '')) = lower(?) OR lower(artist.name) = lower(?)) AND lower(track.title) = lower(?))";
     });
     const rows = db.prepare(
       `SELECT track.mbid AS track_mbid,
               track.artist_name AS track_artist_name,
+              artist.name AS artist_name,
               track.title AS track_title
        ${CANONICAL_FROM}
        WHERE ${conditions.join(" AND ")}
@@ -862,10 +863,12 @@ export function getLibraryTrackOwnershipBatch(tracks, { source = null } = {}) {
     for (const row of rows) {
       const trackMbid = String(row.track_mbid || "").trim();
       if (trackMbid) ownedMbids.add(trackMbid);
-      const artistName = String(row.track_artist_name || "").trim();
       const trackName = String(row.track_title || "").trim();
-      if (artistName && trackName) {
-        ownedNames.add(`${artistName.toLowerCase()}\u0000${trackName.toLowerCase()}`);
+      for (const credit of [row.track_artist_name, row.artist_name]) {
+        const artistName = String(credit || "").trim();
+        if (artistName && trackName) {
+          ownedNames.add(`${artistName.toLowerCase()}\u0000${trackName.toLowerCase()}`);
+        }
       }
     }
   }

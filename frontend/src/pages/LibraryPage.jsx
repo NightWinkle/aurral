@@ -153,7 +153,6 @@ const text = (value) => String(value || "").trim();
 const isAlbumArtistCredit = (track, artist) =>
   !text(track?.artistName) || text(track.artistName).toLowerCase() === text(artist?.name).toLowerCase();
 
-// Library tracks have a performer credit, but no separate performer MBID.
 const trackArtistMbid = (track, artist) =>
   isAlbumArtistCredit(track, artist) ? artist?.mbid || null : null;
 

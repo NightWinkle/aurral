@@ -164,7 +164,7 @@ function buildMetadataRecord(metadata, filePath, rootPath) {
     albumName,
     trackKey,
     trackMbid,
-    trackArtistName: text(common.artist) || artistName,
+    trackArtistName: text(common.artist),
     title,
     trackNumber,
     discNumber,
@@ -384,7 +384,6 @@ export async function scanMusicRoot({
             ? await metadataEnricher(metadata, filePath)
             : null;
           const enrichedMetadata = applyMetadataEnrichment(metadata, enrichment);
-          const common = normalizeMetadata(enrichedMetadata);
           const downloadedByAurral =
             Boolean(enrichment) || Object.keys(readEmbeddedAurralIdentity(metadata)).length > 0;
           const record = buildMetadataRecord(enrichedMetadata, filePath, resolvedRoot);
@@ -435,7 +434,7 @@ export async function scanMusicRoot({
             identityKey: trackKey,
             mbid: listedTrack?.mbid || record.trackMbid,
             title: trackKey !== record.trackKey ? listedTrack.title : record.title,
-            artistName: text(common.artist) || listedTrack?.artist_name || record.trackArtistName,
+            artistName: record.trackArtistName || listedTrack?.artist_name || record.artistName,
             metadata: { ...listedMetadata, ...record.trackMetadata },
             monitored: source !== "aurral" || downloadedByAurral,
             syncSearch,

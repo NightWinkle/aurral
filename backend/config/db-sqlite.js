@@ -1164,6 +1164,7 @@ db.transaction(() => {
 
 tryAddColumn("ALTER TABLE library_management ADD COLUMN monitor_rules TEXT");
 tryAddColumn("ALTER TABLE library_tracks ADD COLUMN keep_file INTEGER NOT NULL DEFAULT 0");
+tryAddColumn("ALTER TABLE library_media_files ADD COLUMN artist_tag TEXT");
 db.exec(`
   CREATE TABLE IF NOT EXISTS library_monitoring_exclusions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

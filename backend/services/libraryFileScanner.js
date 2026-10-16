@@ -301,11 +301,19 @@ const albumHasLidarrFileStmt = db.prepare(
   "SELECT 1 FROM library_media_files WHERE album_id = ? AND source = 'lidarr' AND available = 1 LIMIT 1",
 );
 
-const trackCreditedByEarlierFileStmt = db.prepare(
-  `SELECT 1 FROM library_tracks AS track
-   JOIN library_media_files AS media ON media.track_id = track.id
-   WHERE track.identity_key = ? AND track.artist_name IS NOT NULL AND media.available = 1 AND media.path < ?
+const trackPerformerStmt = db.prepare(
+  `SELECT artist_tag FROM (
+     SELECT media.path, media.artist_tag FROM library_tracks AS track
+     JOIN library_media_files AS media ON media.track_id = track.id
+     WHERE track.identity_key = ? AND media.available = 1 AND media.artist_tag IS NOT NULL AND media.path <> ?
+     UNION ALL SELECT ?, ?
+   ) WHERE artist_tag IS NOT NULL
+   ORDER BY path
    LIMIT 1`,
+);
+
+const trackCreditedStmt = db.prepare(
+  "SELECT 1 FROM library_tracks WHERE identity_key = ? AND artist_name IS NOT NULL",
 );
 
 // A root with nothing in it is a drive that is not connected, so its files
@@ -441,9 +449,9 @@ export async function scanMusicRoot({
             identityKey: trackKey,
             mbid: listedTrack?.mbid || record.trackMbid,
             title: trackKey !== record.trackKey ? listedTrack.title : record.title,
-            artistName: trackCreditedByEarlierFileStmt.get(trackKey, filePath)
-              ? null
-              : record.trackArtistName || listedTrack?.artist_name || record.artistName,
+            artistName:
+              trackPerformerStmt.get(trackKey, filePath, filePath, record.trackArtistName || null)?.artist_tag
+              ?? (trackCreditedStmt.get(trackKey) ? null : record.artistName),
             metadata: { ...listedMetadata, ...record.trackMetadata },
             monitored: source !== "aurral" || downloadedByAurral,
             syncSearch,
@@ -466,6 +474,7 @@ export async function scanMusicRoot({
             mtimeMs: stat.mtimeMs,
             durationMs: record.durationMs,
             quality: record.quality,
+            artistTag: record.trackArtistName,
             scanId,
           });
           if (before) releaseLibraryFileRows(before, { albumId: album.id, trackId: track.id });

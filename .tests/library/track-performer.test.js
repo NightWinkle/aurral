@@ -168,6 +168,51 @@ test("a track whose files credit different performers keeps one credit whatever 
   assert.deepEqual(tracks().map((track) => [track.files.length, track.artistName]), [[2, "Order Owner feat. First"]]);
 });
 
+test("a recording keeps its performer when a rescan finds no artist tag", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "aurral-performer-mbid-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "Mbid Owner", "Mbid Album", "01.mp3");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, "audio");
+  const common = { albumartist: "Mbid Owner", artist: "Mbid Owner feat. Guest", album: "Mbid Album",
+    title: "Mbid Song", track: { no: 1 }, musicbrainz_recordingid: "44444444-4444-4444-8444-444444444444" };
+  const scan = () => scanMusicRoot({ rootPath: root, force: true, metadataReader: async () => ({ common }) });
+  const readTrack = () => getLibrary({ availableOnly: true }).tracks
+    .find((track) => track.files.some((entry) => entry.path === file));
+  await scan();
+  delete common.artist;
+
+  await scan();
+
+  assert.equal(readTrack().artistName, "Mbid Owner feat. Guest");
+});
+
+test("a tagged performer beats files without an artist tag whatever the scan order", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "aurral-performer-untagged-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const credits = { "a.mp3": undefined, "b.flac": "Untagged Owner feat. Guest", "c.mp3": "Untagged Owner feat. Other" };
+  const orders = [["a.mp3", "b.flac"], ["b.flac", "a.mp3"], ["a.mp3", "c.mp3", "b.flac"], ["c.mp3", "a.mp3", "b.flac"]];
+  for (const [index, order] of orders.entries()) {
+    const files = order.map((name) => path.join(root, `Album ${index}`, name));
+    await mkdir(path.dirname(files[0]), { recursive: true });
+    for (const file of files) await writeFile(file, "audio");
+    const scan = (filePaths) => scanMusicRoot({ rootPath: root, filePaths, force: true,
+      metadataReader: async (filePath) => ({ common: { albumartist: "Untagged Owner",
+        artist: credits[path.basename(filePath)], album: `Album ${index}`, title: "Song", track: { no: 1 } } }) });
+    const tracks = () => getLibrary({ availableOnly: true }).tracks
+      .filter((track) => track.files.some((file) => files.includes(file.path)))
+      .map((track) => [track.files.length, track.artistName]);
+
+    await scan(files.slice(0, 1));
+    const firstCredit = credits[order[0]] || "Untagged Owner";
+    assert.deepEqual(tracks(), [[1, firstCredit]], order.join(", "));
+    await scan(files.slice(1));
+    assert.deepEqual(tracks(), [[files.length, credits["b.flac"]]], order.join(", "));
+    await scan([...files].reverse());
+    assert.deepEqual(tracks(), [[files.length, credits["b.flac"]]], order.join(", "));
+  }
+});
+
 for (const scope of ["library", "album"]) {
   test(`${scope} track pages sort by performer before pagination, falling back to the album owner`, () => {
     const artist = upsertLibraryArtist({ identityKey: `sort:${scope}:artist`, name: "Sort Owner" });

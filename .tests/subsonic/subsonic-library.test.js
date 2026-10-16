@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 
 import {
   cleanupIsolatedState,
@@ -331,6 +336,83 @@ test("resolves playlist descriptors to library tracks in bulk", () => {
   assert.equal(resolved[4].track.identityKey, "test-track:Mbid Song");
   assert.equal(resolved.slice(5).every((entry) => entry === null), true);
   assert.ok(statements <= 4, `expected a handful of statements, ran ${statements}`);
+});
+
+test("playlist entries resolve a featured library track by its performer or album owner", async (t) => {
+  const { scanMusicRoot } = await import("../../backend/services/libraryFileScanner.js");
+  const { getLibrary } = await import("../../backend/services/libraryQueryService.js");
+  const { downloadTracker } = await import("../../backend/services/downloadJobs/downloadTracker.js");
+  const { flowPlaylistConfig } = await import("../../backend/services/playlists/flowPlaylistConfig.js");
+  const root = await mkdtemp(path.join(tmpdir(), "aurral-subsonic-featured-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "01.flac");
+  await promisify(execFile)("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1",
+    "-metadata", "album_artist=Featured Owner", "-metadata", "artist=Featured Owner feat. Guest",
+    "-metadata", "album=Featured Album", "-metadata", "title=Featured Song", file,
+  ]);
+  await scanMusicRoot({ rootPath: root, source: "aurral" });
+  const libraryTrack = getLibrary({ availableOnly: true }).tracks
+    .find((entry) => entry.files.some((media) => media.path === file));
+  assert.equal(libraryTrack.artistName, "Featured Owner feat. Guest");
+
+  const user = { id: 75, role: "admin" };
+  const playlistId = "subsonic-featured-resolution";
+  const jobIds = ["Featured Owner", "Featured Owner feat. Guest", "Another Artist"].map((artistName) => {
+    const jobId = downloadTracker.addJob({ artistName, trackName: "Featured Song" }, playlistId);
+    downloadTracker.setDone(jobId, path.join(root, `${artistName}.flac`), "Featured Album");
+    return jobId;
+  });
+  flowPlaylistConfig.createStaticPlaylist({
+    id: playlistId,
+    name: "Featured Resolution",
+    ownerUserId: user.id,
+    tracks: [],
+  });
+
+  const entries = subsonic.getSubsonicPlaylist(`shared:${playlistId}`, user).entry;
+
+  assert.deepEqual(entries.map((entry) => entry.id).sort(), [
+    idFor("shared-song", `${playlistId}:${jobIds[2]}`),
+    idFor("song", libraryTrack.identityKey),
+    idFor("song", libraryTrack.identityKey),
+  ]);
+});
+
+test("a Subsonic playlist reuses the album owner's Library job for a featured song", async (t) => {
+  const { scanMusicRoot } = await import("../../backend/services/libraryFileScanner.js");
+  const { getLibrary } = await import("../../backend/services/libraryQueryService.js");
+  const { downloadTracker } = await import("../../backend/services/downloadJobs/downloadTracker.js");
+  const { playlistManager } = await import("../../backend/services/playlists/playlistManager.js");
+  for (const name of ["updateConfig", "ensureSmartPlaylists", "refreshPlaylist", "scheduleScanLibrary"]) {
+    t.mock.method(playlistManager, name, async () => {});
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "aurral-subsonic-featured-job-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "01.flac");
+  await promisify(execFile)("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.1",
+    "-metadata", "album_artist=Job Owner", "-metadata", "artist=Job Owner feat. Guest",
+    "-metadata", "album=Job Album", "-metadata", "title=Job Song", file,
+  ]);
+  await scanMusicRoot({ rootPath: root, source: "aurral" });
+  const libraryTrack = getLibrary({ availableOnly: true }).tracks
+    .find((entry) => entry.files.some((media) => media.path === file));
+  const libraryJobId = downloadTracker.addJob(
+    { artistName: "Job Owner", trackName: "Job Song", albumName: "Job Album" },
+    "library",
+  );
+  downloadTracker.setDone(libraryJobId, file, "Job Album");
+  const libraryJobs = () => downloadTracker.getAll()
+    .filter((job) => job.playlistType === "library" && job.trackName === "Job Song");
+
+  const playlist = await subsonic.createSubsonicPlaylist(
+    { id: 76, role: "admin" },
+    { name: "Featured Job", songIds: [idFor("song", libraryTrack.identityKey)] },
+  );
+
+  assert.deepEqual(libraryJobs().map((job) => [job.id, job.artistName]), [[libraryJobId, "Job Owner"]]);
+  assert.deepEqual(playlist.tracks.map((track) => [track.artistName, track.canonicalJobId]), [["Job Owner", libraryJobId]]);
 });
 
 test("favorite reads preserve shared relationships, media filters, and user isolation", async () => {

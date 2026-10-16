@@ -35,6 +35,7 @@ import { recordTrackJobQueued } from "./aurralHistoryService.js";
 import { selectCanonicalFile } from "./canonicalFileSelector.js";
 import { subsonicId as idFor } from "./libraryMediaStore.js";
 import { logger } from "./logger.js";
+import { isVariousArtistsCredit } from "./trackMatching/titleText.js";
 import { withHonkerLock } from "./honkerDb.js";
 import { removePlaylistFileIfUnshared } from "./downloadJobs/fileReuse.js";
 import { withPlaylistMutationLock } from "./downloadJobs/mutationGuards.js";
@@ -670,17 +671,26 @@ const trackFromJob = (job) => normalizePlaylistTrack({
 
 const trackFromLibrary = (library, track) => {
   const album = findAlbumForTrack(library, track);
+  const owner = findArtistForAlbum(library, album);
+  const ownerCredit = Boolean(owner?.name) && !isVariousArtistsCredit(owner.name, owner.mbid);
   return normalizePlaylistTrack({
-    artistName: track?.artistName,
+    artistName: ownerCredit ? owner.name : track?.artistName || owner?.name,
     trackName: track?.title,
     albumName: album?.title,
-    artistMbid: findArtistForAlbum(library, album)?.mbid,
+    artistMbid: owner?.mbid,
     albumMbid: album?.releaseGroupMbid || album?.mbid,
     trackMbid: track?.mbid,
     releaseYear: year(album?.releaseDate),
     durationMs: firstFile(track, album?.id, album?.managedBy)?.durationMs,
     trackNumber: track?.albums?.[0]?.trackNumber,
   });
+};
+
+const matchesLibraryTrack = (track, library, entry) => {
+  const libraryTrack = trackFromLibrary(library, entry);
+  if (!libraryTrack) return false;
+  return isSameTrack(track, libraryTrack)
+    || Boolean(entry.artistName) && isSameTrack(track, { ...libraryTrack, artistName: entry.artistName });
 };
 
 const resolvePlaylistSong = (user, value) => {
@@ -773,7 +783,7 @@ export function resolveLibraryTracks(descriptors) {
     const match = byId && playable(byId)
       ? byId
       : candidates.find(
-        (entry) => playable(entry) && isSameTrack(track, trackFromLibrary(library, entry)),
+        (entry) => playable(entry) && matchesLibraryTrack(track, library, entry),
       );
     if (!match) return null;
     const { album, file } = resolveFile(match);

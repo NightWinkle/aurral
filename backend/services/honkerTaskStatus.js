@@ -116,7 +116,7 @@ export const SYSTEM_TASK_LABELS = {
   },
   "weekly-flow-startup-check": {
     label: "Startup playlist schedule check",
-    description: "Resumes pending playlist work after Aurral starts.",
+    description: "Resumes pending playlist work after Aurral starts, then stops slskd searches left by downloads that no longer exist.",
   },
   "playlist-startup-publish": {
     label: "Startup playlist publish",

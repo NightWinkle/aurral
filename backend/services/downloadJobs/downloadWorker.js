@@ -526,6 +526,11 @@ export class DownloadWorker {
               return;
             }
             console.error(`[DownloadWorker] Error processing job ${job.id}:`, error.message);
+            if (job.upgradeForJobId) {
+              const { finalizeQualityUpgradeFailure } = await import("../qualityProfileService.js");
+              await finalizeQualityUpgradeFailure(job, error.message);
+              return;
+            }
             downloadTracker.setFailed(job.id, error.message);
             import("../aurralHistoryService.js")
               .then(({ recordTrackJobFailed }) => recordTrackJobFailed(job, error.message))
@@ -610,6 +615,10 @@ export class DownloadWorker {
     }
 
     try {
+      if (job.upgradeForJobId) {
+        await this._enqueueUpgrade(job, runGeneration);
+        return;
+      }
       let phaseStart = process.hrtime.bigint();
       const { metadataUnreachable, ...resolvedTrack } = await resolveTrackSearchContext(job);
       this._assertJobCanContinue(job, runGeneration);
@@ -698,6 +707,15 @@ export class DownloadWorker {
       };
       throw error;
     }
+  }
+
+  async _enqueueUpgrade(job, runGeneration) {
+    if (!isAnyDownloadSourceConfigured()) throw new Error(getDownloadSourceNotConfiguredMessage());
+    const { manifest: release } = await readReleaseManifest(job.albumMbid, job.releaseMbid);
+    this._assertJobCanContinue(job, runGeneration);
+    if (downloadTracker.enqueueDownloadPipeline(job.id, { release })) return;
+    if (downloadTracker.getJob(job.id)?.status !== "pending" || downloadTracker.isSlskdDispatched(job.id)) return;
+    throw new Error("The upgrade could not be queued");
   }
 
   async checkPlaylistComplete(playlistType) {

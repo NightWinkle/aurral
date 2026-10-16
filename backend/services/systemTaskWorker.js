@@ -119,6 +119,8 @@ export async function processSystemTask(payload = {}, job = null, context = {}) 
     case "weekly-flow-startup-check": {
       const { startWorkerIfPending } = await import("./downloadJobs/downloadWorker.js");
       await startWorkerIfPending();
+      const { stopOrphanedSlskdSearches } = await import("./downloadJobs/downloadCancellationService.js");
+      await stopOrphanedSlskdSearches();
       return;
     }
     case "playlist-startup-publish": {

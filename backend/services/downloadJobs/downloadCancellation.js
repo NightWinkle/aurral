@@ -226,6 +226,17 @@ export function listDownloadProviderWork({
   ).all(...params);
 }
 
+const orphanedProviderWorkStmt = db.prepare(
+  `SELECT job_id, playlist_id, provider, work_id, username, created_at
+   FROM weekly_flow_download_provider_work AS work
+   WHERE provider = ? AND NOT EXISTS (SELECT 1 FROM playlist_download_jobs AS job WHERE job.id = work.job_id)
+   ORDER BY created_at, work_id`,
+);
+
+export function listOrphanedDownloadProviderWork(provider) {
+  return orphanedProviderWorkStmt.all(normalizeId(provider));
+}
+
 export function clearDownloadProviderWork({ provider, workId } = {}) {
   const safeProvider = normalizeId(provider);
   const safeWorkId = normalizeId(workId);

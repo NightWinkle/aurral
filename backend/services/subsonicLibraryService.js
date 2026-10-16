@@ -1329,12 +1329,18 @@ export function resolveStreamPath(value, user) {
   return file?.available && file.path ? file.path : null;
 }
 
+const storedImageUrl = (key) => dbOps.getImage(key)?.imageUrl || null;
+
+const replaceStoredImage = (key, expected, imageUrl) => {
+  if (storedImageUrl(key) === expected) dbOps.setImage(key, imageUrl);
+};
+
 const cachedArtworkUrl = async (key) => {
-  const cached = dbOps.getImage(key);
-  if (!cached?.imageUrl || cached.imageUrl === "NOT_FOUND") return null;
-  const artwork = await warmPublicImageUrl(cached.imageUrl, LIBRARY_IMAGE_PROFILE);
-  if (artwork && artwork !== cached.imageUrl) dbOps.setImage(key, artwork);
-  return artwork || buildImageProxyUrl(cached.imageUrl);
+  const stored = storedImageUrl(key);
+  if (!stored || stored === "NOT_FOUND") return null;
+  const artwork = await warmPublicImageUrl(stored, LIBRARY_IMAGE_PROFILE);
+  if (artwork && artwork !== stored) replaceStoredImage(key, stored, artwork);
+  return artwork || buildImageProxyUrl(stored);
 };
 
 export async function resolveArtworkUrl(value) {
@@ -1375,6 +1381,7 @@ export async function resolveArtworkUrl(value) {
 
   if (parsed.kind === "artist") {
     const artistCacheKey = entity.mbid || entity.identityKey;
+    const storedArtwork = storedImageUrl(artistCacheKey);
     const cached = await cachedArtworkUrl(artistCacheKey);
     if (cached) return cached;
     const albums = artistAlbums(library, entity);
@@ -1382,17 +1389,13 @@ export async function resolveArtworkUrl(value) {
       const cacheId = album.releaseGroupMbid || album.mbid;
       const albumArtwork = cacheId ? await cachedArtworkUrl(`rg:${cacheId}`) : null;
       if (albumArtwork) {
-        dbOps.setImage(artistCacheKey, albumArtwork);
+        replaceStoredImage(artistCacheKey, storedArtwork, albumArtwork);
         return albumArtwork;
       }
     }
     if (entity.mbid) {
       const result = await getArtistImage(entity.mbid, { artistName: entity.name });
-      if (result?.url) {
-        const artwork = await warmPublicImageUrl(result.url, LIBRARY_IMAGE_PROFILE);
-        if (artwork) dbOps.setImage(artistCacheKey, artwork);
-        return artwork;
-      }
+      if (result?.url) return warmPublicImageUrl(result.url, LIBRARY_IMAGE_PROFILE);
     }
     return null;
   }

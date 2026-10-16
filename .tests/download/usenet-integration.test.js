@@ -673,3 +673,112 @@ test("a compilation track takes a single by its own artist from Usenet", () => {
     "Redbone - Come and Get Your Love (1974)",
   ], context), [["Blue Swede - Hooked on a Feeling (1974)", "track"]]);
 });
+
+async function runUntilSettled(payload) {
+  const helpers = { failOrTryNextSource: (_payload, _job, reason) => ({ error: reason }) };
+  let result = payload;
+  while (["search", "download", "poll"].includes(result?.phase)) result = await processUsenetPipelinePayload(result, helpers);
+  return result;
+}
+
+function trackReleases(artistName, downloadUrl) {
+  return [1, 2, 3, 4, 5].map((indexerId) => ({ guid: `${artistName}-${indexerId}`, title: `${artistName} - Atomic MP3`,
+    protocol: "usenet", downloadUrl: downloadUrl(indexerId), indexerId, indexer: `Indexer ${indexerId}`,
+    size: 9 * 1024 * 1024, categories: [3010] }));
+}
+
+test("an indexer that answers HTTP 429 gets no NZB request from any job until its Retry-After passes", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2000-01-01T12:00:00Z") });
+  const requests = [];
+  const server = await createMockHttpServer((req, res) => {
+    requests.push(req.url);
+    if (req.url.startsWith("/1/")) {
+      res.writeHead(429, { ...(req.url.includes("Three") ? {} : { "Retry-After": "600" }), "Content-Type": "text/xml" });
+      res.end('<error code="429" description="User configurable Indexer Grab Limit of 5 in last 24 hour(s) reached."/>');
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("<html><body>Not an NZB</body></html>");
+  });
+  t.after(() => server.close());
+  t.mock.method(prowlarrClient, "getEnabledUsenetIndexers", async () => []);
+  t.mock.method(prowlarrClient, "search", async (query) => {
+    const artistName = query.split(" ").slice(0, 2).join(" ");
+    return trackReleases(artistName, (indexerId) => `${server.url}/${indexerId}/${artistName.replace(" ", "-")}`)
+      .filter((release) => release.indexerId <= (artistName === "Limited Two" ? 1 : 2));
+  });
+  const run = (artistName) => runUntilSettled({ phase: "search", source: "usenet",
+    jobId: downloadTracker.addJob({ artistName, trackName: "Atomic", durationMs: 230000 }, "usenet-rate-limit") });
+
+  const first = await run("Limited One");
+  const second = await run("Limited Two");
+  assert.deepEqual(requests, ["/1/Limited-One", "/2/Limited-One"]);
+  assert.equal(first.error, "The indexer did not return an NZB file");
+  assert.equal(second.error, "Indexer 1 has reached its NZB limit. Aurral will ask it again in 10 minutes.");
+
+  t.mock.timers.tick(601 * 1000);
+  await run("Limited Three");
+  assert.deepEqual(requests.slice(2), ["/1/Limited-Three", "/2/Limited-Three"]);
+
+  t.mock.timers.tick(30 * 60 * 1000);
+  await run("Limited Four");
+  assert.deepEqual(requests.slice(4), ["/2/Limited-Four"]);
+});
+
+test("a track spends its two NZB grabs on indexers that answer, not on ones that are limited", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2000-01-02T12:00:00Z") });
+  const requests = [];
+  const server = await createMockHttpServer((req, res) => {
+    requests.push(req.url);
+    const retryAfter = { 1: "600", 2: "0" }[req.url.split("/")[1]];
+    if (retryAfter) {
+      res.writeHead(429, { "Retry-After": retryAfter, "Content-Type": "text/xml" });
+      res.end('<error code="429" description="Grab limit reached"/>');
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/x-nzb" });
+    res.end('<?xml version="1.0"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb"></nzb>');
+  });
+  t.after(() => server.close());
+  t.mock.method(prowlarrClient, "getEnabledUsenetIndexers", async () => []);
+  t.mock.method(prowlarrClient, "search", async (query) => {
+    const artistName = query.split(" ").slice(0, 2).join(" ");
+    return trackReleases(artistName, (indexerId) => `${server.url}/${indexerId}/${artistName.replace(" ", "-")}`);
+  });
+  const appended = t.mock.method(nzbgetClient, "appendNzb", async () => ({ nzbId: requests.length }));
+  t.mock.method(nzbgetClient, "getHistoryItem", async (nzbId) => ({ NZBID: nzbId, Status: "FAILURE/HEALTH" }));
+  t.mock.method(nzbgetClient, "deleteQueueItem", async () => true);
+  t.mock.method(nzbgetClient, "deleteHistoryItem", async () => true);
+  const run = (artistName) => runUntilSettled({ phase: "search", source: "usenet",
+    jobId: downloadTracker.addJob({ artistName, trackName: "Atomic", durationMs: 230000 }, "usenet-grab-slots") });
+
+  const first = await run("Grab One");
+  assert.deepEqual(requests, ["/1/Grab-One", "/2/Grab-One", "/3/Grab-One", "/4/Grab-One"]);
+  assert.equal(first.error, "Usenet download failed: FAILURE/HEALTH");
+
+  await run("Grab Two");
+  assert.deepEqual(requests.slice(4), ["/2/Grab-Two", "/3/Grab-Two", "/4/Grab-Two"]);
+  assert.equal(appended.mock.callCount(), 4);
+});
+
+test("a track spends a grab on a broken NZB but not on a Newznab error", async (t) => {
+  const requests = [];
+  const server = await createMockHttpServer((req, res) => {
+    requests.push(req.url);
+    res.writeHead(200, { "Content-Type": "application/x-nzb" });
+    res.end(["1", "2"].includes(req.url.split("/")[1])
+      ? '<?xml version="1.0"?><error code="300" description="No such item"/>'
+      : '<?xml version="1.0"?><nz');
+  });
+  t.after(() => server.close());
+  t.mock.method(prowlarrClient, "getEnabledUsenetIndexers", async () => []);
+  t.mock.method(prowlarrClient, "search", async () =>
+    trackReleases("Broken Grab", (indexerId) => `${server.url}/${indexerId}/broken`));
+  const jobId = downloadTracker.addJob({ artistName: "Broken Grab", trackName: "Atomic", durationMs: 230000 },
+    "usenet-broken-nzb");
+
+  const result = await runUntilSettled({ phase: "search", source: "usenet", jobId });
+
+  assert.deepEqual(requests, ["/1/broken", "/2/broken", "/3/broken", "/4/broken"]);
+  assert.equal(result.error, "The indexer did not return an NZB file");
+});

@@ -16,6 +16,7 @@ import {
   upsertLibraryTrack,
 } from "../../backend/services/libraryMediaStore.js";
 import { dbOps } from "../../backend/db/helpers/index.js";
+import { clearTrackMonitoringExclusion } from "../../backend/services/aurralMonitoringStore.js";
 import { flowPlaylistConfig } from "../../backend/services/playlists/flowPlaylistConfig.js";
 import { playlistManager } from "../../backend/services/playlists/playlistManager.js";
 import { getPlaylistStatusSnapshot } from "../../backend/services/playlists/playlistStatusSnapshot.js";
@@ -55,7 +56,7 @@ test("deletes Aurral-owned track files without Lidarr", async (t) => {
     identityKey: `${identity}:track`,
     mbid: `${identity}-mbid`,
     title: "Track",
-    artistName: "Artist",
+    artistName: "Artist feat. Guest",
   });
   linkLibraryAlbumTrack({ albumId: album.id, trackId: track.id });
   upsertLibraryMediaFile({
@@ -101,6 +102,7 @@ test("deletes Aurral-owned track files without Lidarr", async (t) => {
     assert.equal(downloadTracker.getJob(libraryJobId), null);
     assert.equal(downloadTracker.getJob(upgradeJobId), null);
     assert.notEqual(downloadTracker.getJob(differentTrackJobId), null);
+    assert.equal(clearTrackMonitoringExclusion({ artistName: "Artist", title: "Track" }), true);
   } finally {
     db.prepare(
       "DELETE FROM library_search_documents WHERE (entity_kind, entity_id) IN ((?, ?), (?, ?), (?, ?))",

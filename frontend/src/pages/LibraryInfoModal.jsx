@@ -81,7 +81,7 @@ const getRows = ({ kind, source, entity, artist, album, trackNumber }) => {
   }
   if (kind === "track") {
     rows.push(
-      ["Artist", artist?.name || entity.artistName],
+      ["Artist", entity.artistName || artist?.name],
       ["Album", album?.title || entity.albumName],
       ["Track number", trackNumber],
       ["Duration", formatDuration(durationMs(entity, file))],

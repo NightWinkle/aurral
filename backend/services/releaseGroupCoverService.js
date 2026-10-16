@@ -114,16 +114,18 @@ const fetchDeezerAlbumCover = async (
 export const fetchDeezerArtistImageUrl = async ({
   artistName = "",
   deezerArtistId = null,
+  throwOnError = false,
 } = {}) => {
   try {
     const artist = deezerArtistId
-      ? await getDeezerArtistById(deezerArtistId)
+      ? await getDeezerArtistById(deezerArtistId, { throwOnError })
       : artistName
-        ? await getDeezerArtist(artistName)
+        ? await getDeezerArtist(artistName, { throwOnError })
         : null;
     if (!artist?.imageUrl) return null;
     return toPublicCoverUrl(artist.imageUrl);
-  } catch {
+  } catch (error) {
+    if (throwOnError) throw error;
     return null;
   }
 };

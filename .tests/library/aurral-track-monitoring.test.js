@@ -15,6 +15,7 @@ const [
   { downloadWorker },
   { lidarrClient },
   { libraryManager },
+  { requestLibraryTrack },
 ] = await setupIsolatedBackend(
   "aurral-track-monitoring",
   "backend/config/db-sqlite.js",
@@ -25,6 +26,7 @@ const [
   "backend/services/downloadJobs/downloadWorker.js",
   "backend/services/lidarrClient.js",
   "backend/services/libraryManager.js",
+  "backend/services/libraryTrackRequests.js",
 );
 
 const lidarrCalls = [];
@@ -87,7 +89,7 @@ async function createAlbum({ managedBy = "aurral", monitored = true, tracks = ["
     }
     albumTracks.push({ ...track, mbid: trackMbid });
   }
-  return { album, albumMbid, tracks: albumTracks, jobIds, filePaths };
+  return { artist, album, albumMbid, tracks: albumTracks, jobIds, filePaths };
 }
 
 const trackMonitored = (trackId) =>
@@ -221,7 +223,13 @@ test("unmonitoring a track without an MBID leaves a same-titled track's download
 });
 
 test("a track in a Lidarr album is unmonitored by Aurral without calling Lidarr", async () => {
-  const { tracks, jobIds } = await createAlbum({ managedBy: "lidarr", tracks: ["pending"] });
+  const { artist, tracks, jobIds } = await createAlbum({ managedBy: "lidarr", tracks: ["pending"] });
+  libraryStore.upsertLibraryTrack({ identityKey: tracks[0].identity_key, mbid: tracks[0].mbid,
+    title: tracks[0].title, artistName: `${artist.name} feat. Guest` });
+  const ownerJob = downloadTracker.addJob(
+    { artistName: artist.name, trackName: tracks[0].title },
+    "library",
+  );
   const otherArtistJob = downloadTracker.addJob(
     { artistName: "Another Artist", trackName: tracks[0].title },
     "library",
@@ -232,6 +240,7 @@ test("a track in a Lidarr album is unmonitored by Aurral without calling Lidarr"
   assert.equal(result.error, undefined);
   assert.equal(trackMonitored(tracks[0].id), 0);
   assert.equal(downloadTracker.getJob(jobIds[0]).status, "cancelled");
+  assert.equal(downloadTracker.getJob(ownerJob).status, "cancelled");
   assert.equal(downloadTracker.getJob(otherArtistJob).status, "pending");
   assert.deepEqual(lidarrCalls, []);
 });
@@ -243,5 +252,43 @@ test("downloading a missing track in a Lidarr album leaves the download to the t
 
   assert.equal(result, null);
   assert.equal(trackMonitored(tracks[0].id), 1);
+  assert.deepEqual(lidarrCalls, []);
+});
+
+test("requesting a guest track retains canonical album ownership for acquisition", async () => {
+  const { artist, album, albumMbid, tracks } = await createAlbum();
+  const track = tracks[0];
+  libraryStore.upsertLibraryTrack({ identityKey: track.identity_key, mbid: track.mbid,
+    title: track.title, artistName: "Guest & Owner" });
+
+  const result = await requestLibraryTrack({ artistName: "Guest & Owner", artistMbid: null,
+    trackName: track.title, albumName: album.title, albumMbid, trackMbid: track.mbid },
+  { canonicalTrackId: track.id });
+
+  assert.equal(result.monitored, true);
+  const job = downloadTracker.getJob(result.jobId);
+  assert.equal(job.artistName, artist.name);
+  assert.equal(job.artistMbid, artist.mbid);
+  assert.equal(job.albumMbid, albumMbid);
+  assert.equal(job.trackMbid, track.mbid);
+});
+
+test("a Lidarr track request keeps the album owner's identity on its fallback job", async () => {
+  const { artist, album, albumMbid, tracks } = await createAlbum({ managedBy: "lidarr" });
+  const track = tracks[0];
+  libraryStore.upsertLibraryTrack({ identityKey: track.identity_key, mbid: track.mbid,
+    title: track.title, artistName: "Guest & Owner" });
+
+  const result = await requestLibraryTrack({ artistName: artist.name, artistMbid: artist.mbid,
+    trackName: track.title, albumName: album.title, albumMbid, trackMbid: track.mbid },
+  { canonicalTrackId: track.id });
+
+  assert.equal(result.queued, true);
+  assert.equal(result.monitored, undefined);
+  const job = downloadTracker.getJob(result.jobId);
+  assert.equal(job.artistName, artist.name);
+  assert.equal(job.artistMbid, artist.mbid);
+  assert.equal(job.albumMbid, albumMbid);
+  assert.equal(job.trackMbid, track.mbid);
   assert.deepEqual(lidarrCalls, []);
 });

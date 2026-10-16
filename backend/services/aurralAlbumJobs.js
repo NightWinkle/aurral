@@ -206,13 +206,14 @@ export async function cancelTrackDownload(jobId) {
   });
 }
 
-export async function cancelLibraryTrackJobs(track) {
+export async function cancelLibraryTrackJobs(track, ownerNames = []) {
+  const artistNames = new Set([track.artistName, ...ownerNames].map(normalizeKey));
   return cancelActiveAurralJobs(
     downloadTracker.getAll().filter((job) =>
       job.playlistType === "library" &&
       ACTIVE_JOB_STATUSES.has(job.status) &&
       jobMatchesTrack(job, track) &&
-      (Boolean(job.trackMbid) || normalizeKey(job.artistName) === normalizeKey(track.artistName))),
+      (Boolean(job.trackMbid) || artistNames.has(normalizeKey(job.artistName)))),
     null,
   );
 }

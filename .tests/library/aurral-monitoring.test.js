@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 import {
   cleanupIsolatedState,
@@ -25,6 +27,7 @@ const [
   { processSystemTask },
   { clearMetadataProviderCaches },
   { libraryManager },
+  { scanMusicRoot },
 ] = await setupIsolatedBackend(
   "aurral-monitoring",
   "backend/config/db-sqlite.js",
@@ -43,6 +46,7 @@ const [
   "backend/services/systemTaskWorker.js",
   "backend/services/providers/brainzmashProvider.js",
   "backend/services/libraryManager.js",
+  "backend/services/libraryFileScanner.js",
 );
 
 const artistMbid = "a1111111-1111-4111-8111-111111111111";
@@ -848,7 +852,7 @@ test("changing the default rules re-applies them to the artists that use them", 
 
 test("top tracks queue the artist's popular songs that monitored releases do not already bring", async (t) => {
   const deezerRequests = [];
-  const topTracks = ["Second Album Track 1", "Hit Song", "Deleted Song", "Deep Cut"];
+  const topTracks = ["Second Album Track 1", "Hit Song", "Deleted Song", "Owned Featured Song", "Deep Cut"];
   const providerGet = axios.get.bind(axios);
   t.mock.method(axios, "get", async (url, options) => {
     if (!String(url).startsWith("https://api.deezer.com/")) return providerGet(url, options);
@@ -868,18 +872,26 @@ test("top tracks queue the artist's popular songs that monitored releases do not
     throw new Error(`Unexpected Deezer request ${url}`);
   });
   await addAurralArtist("none");
+  const root = path.join(isolatedState.baseDir, "featured-library");
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, "01.flac"), "featured audio");
+  await scanMusicRoot({ rootPath: root, metadataReader: async () => ({ common: {
+    albumartist: "Monitor Artist", artist: "Monitor Artist feat. Guest",
+    musicbrainz_albumartistid: artistMbid, album: "Featured Album", title: "Owned Featured Song",
+  } }) });
   const deletedRecording = "dddddddd-dddd-4ddd-8ddd-000000000001";
   for (const title of ["Deleted Song (Demo)", "Deleted Song"]) {
     monitoringStore.addMonitoringExclusion({ kind: "track", mbid: deletedRecording, artistMbid, artistName: "Monitor Artist", title });
   }
 
-  const saved = await monitorWith(customRules({ catalog: "latest", latestCount: 1, types: ["album"], topTracks: 3 }));
+  const saved = await monitorWith(customRules({ catalog: "latest", latestCount: 1, types: ["album"], topTracks: 4 }));
   assert.equal(saved.statusCode, 200);
   assert.deepEqual(saved.body.monitoring.releaseGroupIds, [releases.secondAlbum.id]);
   assert.deepEqual(saved.body.monitoring.topTracks.map((track) => track.title), ["Hit Song"]);
   assert.deepEqual(saved.body.monitoring.skippedTracks, [
     { title: "Second Album Track 1", reason: "on_release" },
     { title: "Deleted Song", reason: "excluded" },
+    { title: "Owned Featured Song", reason: "in_library" },
   ]);
 
   await runQueuedMonitoringTasks();

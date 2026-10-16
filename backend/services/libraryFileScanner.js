@@ -32,7 +32,6 @@ import {
 } from "./libraryManagementStore.js";
 import { readAurralIdentity } from "./downloadUtils.js";
 import { logger, safeLogDiagnostic } from "./logger.js";
-import { isVariousArtistsCredit } from "./trackMatching/titleText.js";
 
 const AUDIO_EXTENSIONS = new Set([
   ".aac",
@@ -165,7 +164,7 @@ function buildMetadataRecord(metadata, filePath, rootPath) {
     albumName,
     trackKey,
     trackMbid,
-    trackArtistName: isVariousArtistsCredit(artistName, artistMbid) ? text(common.artist) || artistName : artistName,
+    trackArtistName: text(common.artist),
     title,
     trackNumber,
     discNumber,
@@ -302,6 +301,21 @@ const albumHasLidarrFileStmt = db.prepare(
   "SELECT 1 FROM library_media_files WHERE album_id = ? AND source = 'lidarr' AND available = 1 LIMIT 1",
 );
 
+const trackPerformerStmt = db.prepare(
+  `SELECT artist_tag FROM (
+     SELECT media.path, media.artist_tag FROM library_tracks AS track
+     JOIN library_media_files AS media ON media.track_id = track.id
+     WHERE track.identity_key = ? AND media.available = 1 AND media.artist_tag IS NOT NULL AND media.path <> ?
+     UNION ALL SELECT ?, ?
+   ) WHERE artist_tag IS NOT NULL
+   ORDER BY path
+   LIMIT 1`,
+);
+
+const trackCreditedStmt = db.prepare(
+  "SELECT 1 FROM library_tracks WHERE identity_key = ? AND artist_name IS NOT NULL",
+);
+
 // A root with nothing in it is a drive that is not connected, so its files
 // are only marked missing and come back with it. Anywhere else, a file the
 // scan cannot find is gone.
@@ -429,17 +443,19 @@ export async function scanMusicRoot({
             syncSearch,
           });
           if (source === "aurral") claimUnownedAlbum(album);
-          const track = (trackKey !== record.trackKey
-            && db.prepare("SELECT * FROM library_tracks WHERE identity_key = ?").get(trackKey))
-            || upsertLibraryTrack({
-              identityKey: record.trackKey,
-              mbid: record.trackMbid,
-              title: record.title,
-              artistName: record.trackArtistName,
-              metadata: record.trackMetadata,
-              monitored: source !== "aurral" || downloadedByAurral,
-              syncSearch,
-            });
+          let listedMetadata = null;
+          try { listedMetadata = JSON.parse(listedTrack?.metadata_json || "null"); } catch {}
+          const track = upsertLibraryTrack({
+            identityKey: trackKey,
+            mbid: listedTrack?.mbid || record.trackMbid,
+            title: trackKey !== record.trackKey ? listedTrack.title : record.title,
+            artistName:
+              trackPerformerStmt.get(trackKey, filePath, filePath, record.trackArtistName || null)?.artist_tag
+              ?? (trackCreditedStmt.get(trackKey) ? null : record.artistName),
+            metadata: { ...listedMetadata, ...record.trackMetadata },
+            monitored: source !== "aurral" || downloadedByAurral,
+            syncSearch,
+          });
           linkLibraryAlbumTrack({
             albumId: album.id,
             trackId: track.id,
@@ -458,6 +474,7 @@ export async function scanMusicRoot({
             mtimeMs: stat.mtimeMs,
             durationMs: record.durationMs,
             quality: record.quality,
+            artistTag: record.trackArtistName,
             scanId,
           });
           if (before) releaseLibraryFileRows(before, { albumId: album.id, trackId: track.id });

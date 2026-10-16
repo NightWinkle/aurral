@@ -28,6 +28,7 @@ const [
   { hasApprovalFollowUps },
   { processPipelineJob },
   { withPlaylistMutationLock },
+  { scanMusicRoot },
 ] = await setupIsolatedBackend(
   "approved-import-path",
   "backend/config/db-sqlite.js",
@@ -45,6 +46,7 @@ const [
   "backend/services/downloadJobs/blockedJobReview.js",
   "backend/services/downloadPipelineWorker.js",
   "backend/services/downloadJobs/mutationGuards.js",
+  "backend/services/libraryFileScanner.js",
 );
 
 const {
@@ -118,6 +120,8 @@ test("playlist jobs annotate tracks that are already in the library", async () =
     name: "Library ownership",
     tracks: [
       { artistName: "Owned Artist", trackName: "Owned Track", trackMbid: "owned-mbid" },
+      { artistName: "Owned Artist", trackName: "Featured Track" },
+      { artistName: "Owned Artist feat. Guest", trackName: "Featured Track" },
       { artistName: "Missing Artist", trackName: "Missing Track", trackMbid: "missing-mbid" },
     ],
   });
@@ -148,9 +152,18 @@ test("playlist jobs annotate tracks that are already in the library", async () =
     path: "/library/Owned Artist/Owned Album/Owned Track.flac",
     available: true,
   });
+  const root = path.join(isolatedState.baseDir, "featured-library");
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, "01.flac"), "featured audio");
+  await scanMusicRoot({ rootPath: root, source: "lidarr", metadataReader: async () => ({ common: {
+    albumartist: "Owned Artist", artist: "Owned Artist feat. Guest",
+    album: "Featured Album", title: "Featured Track",
+  } }) });
   downloadTracker.addJobs(
     [
       { artistName: "Owned Artist", trackName: "Owned Track", trackMbid: "owned-mbid" },
+      { artistName: "Owned Artist", trackName: "Featured Track" },
+      { artistName: "Owned Artist feat. Guest", trackName: "Featured Track" },
       { artistName: "Missing Artist", trackName: "Missing Track", trackMbid: "missing-mbid" },
     ],
     playlistId,
@@ -161,10 +174,12 @@ test("playlist jobs annotate tracks that are already in the library", async () =
 
   assert.equal(response.status, 200, JSON.stringify(payload));
   assert.deepEqual(
-    payload.map((job) => [job.trackName, job.libraryOwned]),
+    payload.map((job) => [job.artistName, job.trackName, job.libraryOwned]),
     [
-      ["Owned Track", true],
-      ["Missing Track", false],
+      ["Owned Artist", "Owned Track", true],
+      ["Owned Artist", "Featured Track", true],
+      ["Owned Artist feat. Guest", "Featured Track", true],
+      ["Missing Artist", "Missing Track", false],
     ],
   );
 });

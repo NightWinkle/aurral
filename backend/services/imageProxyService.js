@@ -16,7 +16,7 @@ const IMAGE_CACHE_MIGRATION_MARKER = path.join(DATA_DIR, ".image-cache-links-v1"
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 25000;
 const MAX_REDIRECTS = 5;
-const MAX_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024;
+export const MAX_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_PIXELS = 40_000_000;
 const IMAGE_PROFILES = {
   library: { maxPx: 512, maxBytes: 150 * 1024, quality: 70 },
@@ -402,7 +402,7 @@ const shouldNormalizeCachedEntry = (entry) => {
   return entry.meta.contentType !== "image/webp" || Number(entry.meta.size || 0) > profile.maxBytes;
 };
 
-const inspectImageBuffer = async (buffer, contentType) => {
+export const inspectImageBuffer = async (buffer, contentType) => {
   const expectedFormats = IMAGE_FORMATS_BY_CONTENT_TYPE[contentType];
   if (!expectedFormats) {
     throw new Error("Unsupported image content type");
@@ -424,7 +424,7 @@ const inspectImageBuffer = async (buffer, contentType) => {
   return metadata;
 };
 
-const optimizeImageBuffer = async (buffer, contentType, imageProfile = "library") => {
+export const optimizeImageBuffer = async (buffer, contentType, imageProfile = "library") => {
   if (!OPTIMIZABLE_CONTENT_TYPES.has(contentType)) {
     return { buffer, contentType };
   }

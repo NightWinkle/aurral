@@ -69,8 +69,8 @@ const getLibraryMediaFileStmt = db.prepare(
 );
 const upsertLibraryMediaFileStmt = db.prepare(
   `INSERT INTO library_media_files
-    (track_id, album_id, source, path, format, size, mtime_ms, duration_ms, quality_json, available, last_seen_scan_id, created_at, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (track_id, album_id, source, path, format, size, mtime_ms, duration_ms, quality_json, artist_tag, available, last_seen_scan_id, created_at, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(source, path) DO UPDATE SET
      track_id = excluded.track_id,
      album_id = COALESCE(excluded.album_id, library_media_files.album_id),
@@ -80,6 +80,7 @@ const upsertLibraryMediaFileStmt = db.prepare(
      mtime_ms = excluded.mtime_ms,
      duration_ms = excluded.duration_ms,
      quality_json = COALESCE(excluded.quality_json, library_media_files.quality_json),
+     artist_tag = excluded.artist_tag,
      available = excluded.available,
      last_seen_scan_id = excluded.last_seen_scan_id,
      updated_at = excluded.updated_at`,
@@ -1738,6 +1739,7 @@ export function upsertLibraryMediaFile({
   mtimeMs = null,
   durationMs = null,
   quality = null,
+  artistTag = null,
   available = true,
   scanId,
 }) {
@@ -1754,6 +1756,7 @@ export function upsertLibraryMediaFile({
   const normalizedMtimeMs = Number.isFinite(Number(mtimeMs)) ? Number(mtimeMs) : null;
   const normalizedDurationMs = Number.isFinite(Number(durationMs)) ? Number(durationMs) : null;
   const qualityText = stringify(quality);
+  const normalizedArtistTag = normalizeText(artistTag) || null;
   const normalizedAvailable = available === true ? 1 : 0;
   const existing = getLibraryMediaFileStmt.get(fileSource, filePath);
   if (
@@ -1765,6 +1768,7 @@ export function upsertLibraryMediaFile({
     normalizedMtimeMs === existing.mtime_ms &&
     normalizedDurationMs === existing.duration_ms &&
     (qualityText == null || qualityText === existing.quality_json) &&
+    normalizedArtistTag === existing.artist_tag &&
     normalizedAvailable === existing.available
   ) {
     return existing;
@@ -1780,6 +1784,7 @@ export function upsertLibraryMediaFile({
     normalizedMtimeMs,
     normalizedDurationMs,
     qualityText,
+    normalizedArtistTag,
     normalizedAvailable,
     Number(scanId),
     timestamp,

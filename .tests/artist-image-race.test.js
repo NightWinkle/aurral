@@ -120,7 +120,7 @@ async function whileOldIsBlocked(promise) {
       promise,
       new Promise((_resolve, reject) => {
         timer = setTimeout(() => reject(new assert.AssertionError({
-          message: "the post-override lookup must finish while the old lookup is blocked",
+          message: "the newer lookup must progress while the old lookup is blocked",
         })), 2000);
       }),
     ]);
@@ -360,4 +360,117 @@ test("finishing an old lookup leaves the replacement lookup registered", async (
     newGate.release();
     await Promise.allSettled([oldLookup, latest]);
   }
+});
+
+for (const [index, recoveredUrl, finishRecoveryFirst] of [
+  [14, oldImage, false],
+  [15, null, false],
+  [16, oldImage, true],
+  [17, null, true],
+]) {
+  const recoveryResult = recoveredUrl ? "a cached cover" : "no cached cover";
+  const order = finishRecoveryFirst ? "first" : "last";
+  test(`forced refresh supersedes negative-cache recovery returning ${recoveryResult} ${order}`, async () => {
+    const mbid = artistId(index);
+    const albumId = artistId(index + 200);
+    const deezerArtistId = String(6000 + index);
+    const recoveryGate = gate();
+    const providerGate = gate();
+    let providerRequests = 0;
+    artist(mbid, { albums: [{ id: albumId, title: "Old Album", type: "Album" }] });
+    fixtures.set(`metadata.invalid/album/${albumId}`, async () => {
+      await recoveryGate.wait();
+      return { id: albumId, title: "Old Album", images: [], artists: [], releases: [] };
+    });
+    fixtures.set(`api.deezer.com/artist/${deezerArtistId}`, async () => {
+      providerRequests += 1;
+      await providerGate.wait();
+      return {
+        id: Number(deezerArtistId),
+        name: "Current Artist",
+        picture: newImage,
+        picture_medium: newImage,
+        picture_big: newImage,
+      };
+    });
+    dbOps.setArtistOverride(mbid, { deezerArtistId });
+    dbOps.setImage(mbid, "NOT_FOUND");
+    if (recoveredUrl) dbOps.setImage(`rg:${albumId}`, recoveredUrl);
+
+    const recovery = getArtistImage(mbid);
+    await recoveryGate.started;
+    const refreshed = getArtistImage(mbid, { forceRefresh: true });
+    const repeatedRefresh = getArtistImage(mbid, true);
+    let laterRefresh;
+    let normalLookup;
+    try {
+      await whileOldIsBlocked(providerGate.started);
+      if (finishRecoveryFirst) {
+        recoveryGate.release();
+        await recovery;
+        assert.equal(dbOps.getImage(mbid)?.imageUrl, "NOT_FOUND");
+        laterRefresh = getArtistImage(mbid, { forceRefresh: true });
+        normalLookup = getArtistImage(mbid);
+      }
+
+      providerGate.release();
+      const current = await refreshed;
+      assert.equal(current.url, newImage);
+      assert.equal(await repeatedRefresh, current);
+      if (finishRecoveryFirst) {
+        assert.equal(await laterRefresh, current);
+        assert.equal(await normalLookup, current);
+      }
+      assert.equal(providerRequests, 1);
+      assert.equal(dbOps.getImage(mbid)?.imageUrl, newImage);
+    } finally {
+      recoveryGate.release();
+      providerGate.release();
+      await Promise.allSettled([recovery, refreshed, repeatedRefresh, laterRefresh, normalLookup]);
+    }
+
+    const original = await recovery;
+    assert.equal(original.url, recoveredUrl);
+    assert.equal(!!original.notFound, !recoveredUrl);
+    assert.equal(dbOps.getImage(mbid)?.imageUrl, newImage);
+  });
+}
+
+test("replacing a pending recovery at capacity leaves the oldest lookup registered", async () => {
+  const oldestMbid = artistId(18);
+  const recoveryMbid = artistId(19);
+  const oldestGate = gate();
+  const recoveryGate = gate();
+  artist(oldestMbid, { images: [image(oldImage)], before: () => oldestGate.wait() });
+  artist(recoveryMbid, { images: [image(newImage)], before: () => recoveryGate.wait() });
+  dbOps.setImage(recoveryMbid, "NOT_FOUND");
+
+  const oldest = getArtistImage(oldestMbid);
+  await oldestGate.started;
+  const recovery = getArtistImage(recoveryMbid);
+  await recoveryGate.started;
+  const fillers = [];
+  let refreshed;
+  try {
+    // Cached recoveries stay pending until this synchronous batch yields.
+    for (let index = 0; index < 98; index += 1) {
+      const mbid = artistId(300 + index);
+      const albumId = artistId(500 + index);
+      dbOps.setImage(mbid, "NOT_FOUND");
+      dbOps.setDeezerMbidCache(`artist_rg:${mbid}`, albumId);
+      dbOps.setImage(`rg:${albumId}`, oldImage);
+      fillers.push(getArtistImage(mbid));
+    }
+    refreshed = getArtistImage(recoveryMbid, { forceRefresh: true });
+    oldestGate.release();
+
+    assert.equal((await oldest).url, oldImage);
+    assert.equal(dbOps.getImage(oldestMbid)?.imageUrl, oldImage);
+  } finally {
+    oldestGate.release();
+    recoveryGate.release();
+    await Promise.allSettled([oldest, recovery, refreshed, ...fillers]);
+  }
+  assert.equal((await refreshed).url, newImage);
+  assert.equal(dbOps.getImage(recoveryMbid)?.imageUrl, newImage);
 });

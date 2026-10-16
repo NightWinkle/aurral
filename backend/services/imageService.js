@@ -158,12 +158,12 @@ export const invalidateArtistImage = (mbid) => {
   dbOps.deleteImage(mbid);
 };
 
-const addToPendingRequests = (mbid, promise) => {
-  if (pendingImageRequests.size >= MAX_PENDING_REQUESTS) {
+const addToPendingRequests = (mbid, request) => {
+  if (!pendingImageRequests.has(mbid) && pendingImageRequests.size >= MAX_PENDING_REQUESTS) {
     const firstKey = pendingImageRequests.keys().next().value;
     pendingImageRequests.delete(firstKey);
   }
-  pendingImageRequests.set(mbid, promise);
+  pendingImageRequests.set(mbid, request);
 };
 
 const getCachedUrl = (cacheKey) => {
@@ -293,16 +293,17 @@ export const getArtistImage = async (
     dbOps.deleteImage(mbid);
   }
 
-  if (pendingImageRequests.has(mbid)) {
-    return pendingImageRequests.get(mbid);
+  const pending = pendingImageRequests.get(mbid);
+  if (pending && (!forceRefresh || !pending.recoverOnly)) {
+    return pending.promise;
   }
 
-  const isCurrentRequest = () => pendingImageRequests.get(mbid) === fetchPromise;
+  const recoverOnly =
+    !forceRefresh &&
+    ((cachedImage && cachedImage.imageUrl === "NOT_FOUND") || hasFreshNegativeCache(mbid));
+  const isCurrentRequest = () => pendingImageRequests.get(mbid)?.promise === fetchPromise;
   const fetchPromise = (async () => {
-    if (
-      !forceRefresh &&
-      ((cachedImage && cachedImage.imageUrl === "NOT_FOUND") || hasFreshNegativeCache(mbid))
-    ) {
+    if (recoverOnly) {
       const override = dbOps.getArtistOverride(mbid);
       const resolvedMbid = override?.musicbrainzId || mbid;
       const recovered = await recoverArtistCoverFromCachedReleaseGroups(resolvedMbid);
@@ -479,7 +480,7 @@ export const getArtistImage = async (
     return { url: null, images: [], notFound: true };
   })();
 
-  addToPendingRequests(mbid, fetchPromise);
+  addToPendingRequests(mbid, { promise: fetchPromise, recoverOnly });
   try {
     return await fetchPromise;
   } finally {

@@ -9,7 +9,6 @@ import {
 } from "./releaseGroupCoverService.js";
 
 const MAX_NEGATIVE_CACHE = 1000;
-const MAX_PENDING_REQUESTS = 100;
 const NEGATIVE_CACHE_TTL_MS = 60 * 60 * 1000;
 const RELEASE_GROUP_CONCURRENCY = 4;
 const negativeImageCache = new Map();
@@ -158,14 +157,6 @@ export const invalidateArtistImage = (mbid) => {
   dbOps.deleteImage(mbid);
 };
 
-const addToPendingRequests = (mbid, request) => {
-  if (!pendingImageRequests.has(mbid) && pendingImageRequests.size >= MAX_PENDING_REQUESTS) {
-    const firstKey = pendingImageRequests.keys().next().value;
-    pendingImageRequests.delete(firstKey);
-  }
-  pendingImageRequests.set(mbid, request);
-};
-
 const getCachedUrl = (cacheKey) => {
   const cached = dbOps.getImage(cacheKey);
   if (
@@ -294,7 +285,7 @@ export const getArtistImage = async (
   }
 
   const pending = pendingImageRequests.get(mbid);
-  if (pending && (!forceRefresh || !pending.recoverOnly)) {
+  if (pending && (pending.forceRefresh || !forceRefresh)) {
     return pending.promise;
   }
 
@@ -480,7 +471,7 @@ export const getArtistImage = async (
     return { url: null, images: [], notFound: true };
   })();
 
-  addToPendingRequests(mbid, { promise: fetchPromise, recoverOnly });
+  pendingImageRequests.set(mbid, { promise: fetchPromise, forceRefresh });
   try {
     return await fetchPromise;
   } finally {

@@ -6,6 +6,7 @@ import {
 
 const mbid = "10101010-1010-4010-8010-101010101010";
 const photo = "https://cdn.deezer.test/recovered-artist.jpg";
+const missingArtist = { error: { type: "DataException", message: "no data", code: 800 } };
 let artistLinked = true;
 const provider = await createMockHttpServer((req, res) => {
   res.setHeader("content-type", "application/json");
@@ -53,6 +54,47 @@ test("a failed artist ID lookup can recover without clearing its cache", async t
   failed = false;
   assert.equal((await deezer.getDeezerArtistById(101))?.imageUrl, photo);
 });
+
+for (const [mode, options] of [["default", undefined], ["strict", { throwOnError: true }]]) {
+  test("a missing artist ID is cached as absence for " + mode + " callers", async t => {
+    let requests = 0;
+    responses(t, () => { requests++; return missingArtist; });
+    assert.equal(await deezer.getDeezerArtistById(101, options), null);
+    assert.equal(await deezer.getDeezerArtistById(101, options), null);
+    assert.equal(requests, 1);
+  });
+}
+
+test("strict and default callers share a missing artist ID without treating it as an outage", async t => {
+  let release;
+  let requests = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  responses(t, async () => { requests++; await gate; return missingArtist; });
+  const results = Promise.allSettled([
+    deezer.getDeezerArtistById(101, { throwOnError: true }),
+    deezer.getDeezerArtistById(101),
+  ]);
+  release();
+  assert.deepEqual(await results, [
+    { status: "fulfilled", value: null },
+    { status: "fulfilled", value: null },
+  ]);
+  assert.equal(await deezer.getDeezerArtistById(101, { throwOnError: true }), null);
+  assert.equal(requests, 1);
+});
+
+for (const code of [4, 700]) {
+  test("artist ID error " + code + " remains retryable for strict and default callers", async t => {
+    let failed = true;
+    responses(t, () => failed ? { error: { code, message: "Provider unavailable" } }
+      : { id: 101, name: "Provider Artist", picture_big: photo });
+    await assert.rejects(deezer.getDeezerArtistById(101, { throwOnError: true }));
+    assert.equal(await deezer.getDeezerArtistById(101), null);
+    failed = false;
+    assert.equal((await deezer.getDeezerArtistById(101, { throwOnError: true }))?.imageUrl, photo);
+  });
+}
 
 test("a name-search error in HTTP 200 is not cached as an absent artist", async t => {
   let failed = true;
@@ -134,5 +176,25 @@ for (const origin of ["relationship", "override", "name search"]) {
     assert.notEqual(dbOps.getImage(mbid)?.imageUrl, "NOT_FOUND");
     failed = false;
     assert.equal((await getArtistImage(mbid)).url, photo);
+  });
+}
+
+for (const origin of ["relationship", "override"]) {
+  test("a missing " + origin + " artist ID allows the image absence to be cached", async t => {
+    artistLinked = origin === "relationship";
+    if (origin === "override") dbOps.setArtistOverride(mbid, { deezerArtistId: "101" });
+    let requests = 0;
+    responses(t, url => {
+      assert.equal(url, "https://api.deezer.com/artist/101");
+      requests++;
+      return missingArtist;
+    });
+    assert.deepEqual(await getArtistImage(mbid, { forceRefresh: true }), {
+      url: null, images: [], notFound: true,
+    });
+    assert.equal(dbOps.getImage(mbid)?.imageUrl, "NOT_FOUND");
+    assert.equal(dbOps.getDeezerMbidCache(`artist_rg:${mbid}`), "NOT_FOUND");
+    assert.deepEqual(await getArtistImage(mbid), { url: null, images: [], notFound: true });
+    assert.equal(requests, 1);
   });
 }

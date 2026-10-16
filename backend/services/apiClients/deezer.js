@@ -97,7 +97,9 @@ export async function getDeezerArtistById(artistId, { throwOnError = false } = {
           timeout: 3000,
         },
       );
-      if (res.data?.error) throw new Error("Deezer artist unavailable");
+      if (res.data?.error && res.data.error.code !== 800) {
+        throw new Error("Deezer artist unavailable");
+      }
       const data = res.data;
       if (!data?.id) {
         deezerArtistCache.set(cacheKey, null);

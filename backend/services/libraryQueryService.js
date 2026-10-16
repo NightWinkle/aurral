@@ -787,9 +787,9 @@ export function getLibraryTrackOwnership({
     const artist = String(artistName || "").trim();
     const title = String(trackName || "").trim();
     if (!artist || !title) return false;
-    conditions.push("(lower(coalesce(track.artist_name, '')) = lower(?) OR lower(artist.name) = lower(?))");
-    conditions.push("lower(track.title) = lower(?)");
-    parameters.push(artist, artist, title);
+    conditions.push("track.title = ? COLLATE NOCASE");
+    conditions.push("(track.artist_name = ? COLLATE NOCASE OR artist.name = ? COLLATE NOCASE)");
+    parameters.push(title, artist, artist);
   }
 
   return Boolean(db.prepare(
@@ -843,14 +843,17 @@ export function getLibraryTrackOwnershipBatch(tracks, { source = null } = {}) {
       conditions.push("media.source = ?");
       parameters.push(sourceFilter);
     }
-    const referenceConditions = batch.map((reference) => {
-      if (reference.kind === "mbid") {
-        parameters.push(reference.value);
-        return "track.mbid = ?";
-      }
-      parameters.push(reference.artistName, reference.artistName, reference.trackName);
-      return "((lower(coalesce(track.artist_name, '')) = lower(?) OR lower(artist.name) = lower(?)) AND lower(track.title) = lower(?))";
-    });
+    const mbids = batch.filter((reference) => reference.kind === "mbid").map((reference) => reference.value);
+    const titles = batch.filter((reference) => reference.kind === "names").map((reference) => reference.trackName);
+    const referenceConditions = [];
+    if (mbids.length) {
+      referenceConditions.push(`track.mbid IN (${mbids.map(() => "?").join(",")})`);
+      parameters.push(...mbids);
+    }
+    if (titles.length) {
+      referenceConditions.push(`track.title COLLATE NOCASE IN (${titles.map(() => "?").join(",")})`);
+      parameters.push(...titles);
+    }
     const rows = db.prepare(
       `SELECT track.mbid AS track_mbid,
               track.artist_name AS track_artist_name,

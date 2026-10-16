@@ -301,6 +301,13 @@ const albumHasLidarrFileStmt = db.prepare(
   "SELECT 1 FROM library_media_files WHERE album_id = ? AND source = 'lidarr' AND available = 1 LIMIT 1",
 );
 
+const trackCreditedByEarlierFileStmt = db.prepare(
+  `SELECT 1 FROM library_tracks AS track
+   JOIN library_media_files AS media ON media.track_id = track.id
+   WHERE track.identity_key = ? AND track.artist_name IS NOT NULL AND media.available = 1 AND media.path < ?
+   LIMIT 1`,
+);
+
 // A root with nothing in it is a drive that is not connected, so its files
 // are only marked missing and come back with it. Anywhere else, a file the
 // scan cannot find is gone.
@@ -434,7 +441,9 @@ export async function scanMusicRoot({
             identityKey: trackKey,
             mbid: listedTrack?.mbid || record.trackMbid,
             title: trackKey !== record.trackKey ? listedTrack.title : record.title,
-            artistName: record.trackArtistName || listedTrack?.artist_name || record.artistName,
+            artistName: trackCreditedByEarlierFileStmt.get(trackKey, filePath)
+              ? null
+              : record.trackArtistName || listedTrack?.artist_name || record.artistName,
             metadata: { ...listedMetadata, ...record.trackMetadata },
             monitored: source !== "aurral" || downloadedByAurral,
             syncSearch,

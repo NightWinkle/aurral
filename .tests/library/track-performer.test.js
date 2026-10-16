@@ -148,6 +148,26 @@ test("reused canonical tracks refresh performer tags without replacing identity"
   assert.equal(withoutPerformerTag.artistName, "Corrected Guest");
 });
 
+test("a track whose files credit different performers keeps one credit whatever the scan order", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "aurral-performer-order-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const files = ["a.mp3", "b.mp3"].map((name) => path.join(root, "Order Owner", "Order Album", name));
+  await mkdir(path.dirname(files[0]), { recursive: true });
+  for (const file of files) await writeFile(file, "audio");
+  const credits = new Map([[files[0], "Order Owner feat. First"], [files[1], "Order Owner feat. Second"]]);
+  const scan = (filePaths) => scanMusicRoot({ rootPath: root, filePaths, force: true,
+    metadataReader: async (filePath) => ({ common: { albumartist: "Order Owner", artist: credits.get(filePath),
+      album: "Order Album", title: "Order Song", track: { no: 1 } } }) });
+  const tracks = () => getLibrary({ availableOnly: true }).tracks
+    .filter((track) => track.files.some((file) => files.includes(file.path)));
+
+  await scan(files);
+  assert.deepEqual(tracks().map((track) => [track.files.length, track.artistName]), [[2, "Order Owner feat. First"]]);
+
+  await scan([...files].reverse());
+  assert.deepEqual(tracks().map((track) => [track.files.length, track.artistName]), [[2, "Order Owner feat. First"]]);
+});
+
 for (const scope of ["library", "album"]) {
   test(`${scope} track pages sort by performer before pagination, falling back to the album owner`, () => {
     const artist = upsertLibraryArtist({ identityKey: `sort:${scope}:artist`, name: "Sort Owner" });

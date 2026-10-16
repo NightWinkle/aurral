@@ -100,14 +100,14 @@ const LIBRARY_REFRESH_MODES = new Set(["quick", "full"]);
 
 export function registerLibraryIndex(router) {
   router.get("/albums/:albumId/cover", async (req, res) => {
-    if (!verifyTokenAuth(req) || !req.user) {
+    if (!verifyTokenAuth(req)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     try {
       const artwork = await getLibraryAlbumArtwork(req.params.albumId);
       if (!artwork) return res.status(404).json({ error: "Album cover not found" });
       res.set("Cache-Control", "private, max-age=3600");
-      return res.type("image/webp").send(artwork);
+      return res.type(artwork.contentType).send(artwork.buffer);
     } catch {
       return res.status(500).json({ error: "Failed to read album cover" });
     }

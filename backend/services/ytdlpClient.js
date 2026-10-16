@@ -4,11 +4,12 @@ import fsPromises from "fs/promises";
 import path from "path";
 import { dbOps } from "../db/helpers/index.js";
 import { resolveYtdlpStagingRoot } from "./downloadFolderConfig.js";
+import { logger } from "./logger.js";
 
 const DEFAULT_BINARY = "yt-dlp";
 const SEARCH_LIMIT = 5;
 const SONG_SEARCH_LIMIT = 10;
-const SONG_SEARCH_BUDGET_MS = 6000;
+const SONG_SEARCH_BUDGET_MS = 15000;
 const SONG_READ_BATCH = 3;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const AUDIO_FORMAT = "m4a";
@@ -165,7 +166,7 @@ function runYtdlp(args, { timeoutMs = 120000, cwd, shouldCancel, signal } = {}) 
       if (settled) return;
       settled = true;
       clearTimers();
-      if (terminationError) {
+      if (terminationError && code !== 0) {
         signalProcess("SIGKILL");
         reject(terminationError);
         return;
@@ -244,8 +245,7 @@ function readSong(stdout, { id, title }) {
 // read in full for YouTube Music's own artists, album, and length, a few at a
 // time. `decided` is asked after each batch, so every read a batch starts
 // counts and one search gives the same songs each time; the search stops once
-// it agrees. The whole search also has one short deadline, since one read now
-// and then stalls for many seconds: the reads still running are killed and
+// it agrees. At the search deadline, the reads still running are killed and
 // the songs in hand are returned. A song that cannot be read (age-gated,
 // removed) is left out.
 async function searchSongs(query, { limit, wanted = () => true, decided = () => false }) {
@@ -273,7 +273,13 @@ async function searchSongs(query, { limit, wanted = () => true, decided = () => 
       await Promise.all(listed.slice(first, first + SONG_READ_BATCH).map((entry, offset) => runYtdlp(
         ["--skip-download", "--dump-json", "--no-warnings", "--", songUrl(entry.id)],
         { signal: stop.signal },
-      ).then(({ stdout: read }) => { songs[first + offset] = readSong(read, entry); }, () => {})));
+      ).then(({ stdout: read }) => { songs[first + offset] = readSong(read, entry); }, (error) => {
+        logger.warn("ytdlp", "Could not read YouTube Music song", {
+          query,
+          id: entry.id,
+          error: error?.message || String(error),
+        });
+      })));
       if (stop.signal.aborted || await decided(songs.filter(Boolean))) break;
     }
     return songs.filter(Boolean);

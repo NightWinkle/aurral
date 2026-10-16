@@ -292,17 +292,29 @@ const clearTransientPipelineMetaStmt = db.prepare(`
 
 const updateDownloadMetaStmt = db.prepare(`
   UPDATE ${JOBS_TABLE}
-  SET download_source = COALESCE(?, download_source),
-      download_client = COALESCE(?, download_client),
-      download_client_id = COALESCE(?, download_client_id),
-      release_guid = COALESCE(?, release_guid),
-      release_title = COALESCE(?, release_title),
-      indexer_id = COALESCE(?, indexer_id),
-      indexer_name = COALESCE(?, indexer_name),
-      remote_username = COALESCE(?, remote_username),
-      remote_filename = COALESCE(?, remote_filename)
+  SET download_source = ?,
+      download_client = ?,
+      download_client_id = ?,
+      release_guid = ?,
+      release_title = ?,
+      indexer_id = ?,
+      indexer_name = ?,
+      remote_username = ?,
+      remote_filename = ?
   WHERE id = ?
 `);
+
+const DOWNLOAD_METADATA_KEYS = [
+  "downloadSource",
+  "downloadClient",
+  "downloadClientId",
+  "releaseGuid",
+  "releaseTitle",
+  "indexerId",
+  "indexerName",
+  "remoteUsername",
+  "remoteFilename",
+];
 
 const updateDeniedSourcesStmt = db.prepare(`
   UPDATE ${JOBS_TABLE}
@@ -537,15 +549,7 @@ export class DownloadTracker {
     const job = this.jobs.get(id);
     if (job) {
       if (clearDownloadMetadata) {
-        job.downloadSource = null;
-        job.downloadClient = null;
-        job.downloadClientId = null;
-        job.releaseGuid = null;
-        job.releaseTitle = null;
-        job.indexerId = null;
-        job.indexerName = null;
-        job.remoteUsername = null;
-        job.remoteFilename = null;
+        for (const key of DOWNLOAD_METADATA_KEYS) job[key] = null;
       }
       job.slskdSearchId = null;
       job.slskdBatchId = null;
@@ -560,33 +564,15 @@ export class DownloadTracker {
   updateDownloadMetadata(id, metadata = {}) {
     const job = this.jobs.get(id);
     if (!job || !metadata || typeof metadata !== "object") return false;
-    const assign = (key, value) => {
-      if (value == null) return;
-      const text = String(value).trim();
-      if (!text) return;
-      job[key] = text;
-    };
-    assign("downloadSource", metadata.downloadSource);
-    assign("downloadClient", metadata.downloadClient);
-    assign("downloadClientId", metadata.downloadClientId);
-    assign("releaseGuid", metadata.releaseGuid);
-    assign("releaseTitle", metadata.releaseTitle);
-    assign("indexerId", metadata.indexerId);
-    assign("indexerName", metadata.indexerName);
-    assign("remoteUsername", metadata.remoteUsername);
-    assign("remoteFilename", metadata.remoteFilename);
-    updateDownloadMetaStmt.run(
-      metadata.downloadSource ?? null,
-      metadata.downloadClient ?? null,
-      metadata.downloadClientId ?? null,
-      metadata.releaseGuid ?? null,
-      metadata.releaseTitle ?? null,
-      metadata.indexerId ?? null,
-      metadata.indexerName ?? null,
-      metadata.remoteUsername ?? null,
-      metadata.remoteFilename ?? null,
-      id,
-    );
+    const values = Object.fromEntries(DOWNLOAD_METADATA_KEYS.map((key) => [
+      key,
+      String(metadata[key] ?? "").trim() || null,
+    ]));
+    const movedSource = values.downloadSource && values.downloadSource !== job.downloadSource;
+    for (const key of DOWNLOAD_METADATA_KEYS) {
+      if (movedSource || values[key]) job[key] = values[key];
+    }
+    updateDownloadMetaStmt.run(...DOWNLOAD_METADATA_KEYS.map((key) => job[key] ?? null), id);
     recordAlbumTrackState(job);
     return true;
   }
@@ -602,17 +588,9 @@ export class DownloadTracker {
       && entry.payload.albumGroupJobIds?.includes(jobId)) || null;
   }
 
-  // The download worker never takes an upgrade, so an upgrade an attempt
-  // gives back searches for its track at once.
   releaseFromAlbumGrab(id, reason = null, options = {}) {
     setActiveDownloadAttemptId(id, null);
-    if (!this.jobs.get(id)?.upgradeForJobId) return this.setPending(id, reason, options);
-    if (!this.setPending(id, reason)) return false;
-    this.pendingSet.delete(id);
-    this._removeFromPendingQueues(id);
-    this.setAlbumGrabAttempted(id, true);
-    this.enqueueDownloadPipeline(id);
-    return false;
+    return this.setPending(id, reason, options);
   }
 
   // Album attempts that ended on a step that failed every retry since the
@@ -630,10 +608,6 @@ export class DownloadTracker {
     updateAlbumGrabFailuresStmt.run(count, job.id);
   }
 
-  // A track that starts its search by release, so the worker resolves its
-  // release before it is queued. An upgrade reads its release where it is
-  // queued, a manual search never searches by release, and a track a release
-  // attempt already tried searches for itself.
   canSearchByRelease(job) {
     return !job.upgradeForJobId && searchesByRelease(job) && isAlbumGrabSourceConfigured();
   }
@@ -932,7 +906,7 @@ export class DownloadTracker {
     this.pendingRetrySet = new Set();
     for (const job of this.jobs.values()) {
       this._applyStatusDelta(job.playlistType, null, job.status);
-      if (job.status === "pending" && !job.upgradeForJobId) {
+      if (job.status === "pending" && !job.manualReplacementSearch) {
         this.pendingFreshQueue.push(job.id);
         this.pendingSet.add(job.id);
       }
@@ -1207,11 +1181,13 @@ export class DownloadTracker {
     });
     const job = this.jobs.get(id);
     job.upgradeForJobId = sourceJob.id;
-    this.pendingSet.delete(id);
-    this.pendingRetrySet.delete(id);
-    this._removeFromPendingQueues(id);
     this._update(job);
     return id;
+  }
+
+  queueFirst(ids) {
+    const first = new Set(ids);
+    this.pendingFreshQueue = [...ids, ...this.pendingFreshQueue.filter((id) => !first.has(id))];
   }
 
   addReplacementSearchJob(sourceJob) {

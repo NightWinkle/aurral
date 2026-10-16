@@ -473,11 +473,16 @@ function isLidarrNotFoundError(error) {
 // stored mbid.
 const albumJobKeys = (album) => [album.releaseGroupMbid, album.mbid];
 
-async function removeLibraryDownloadJobs(tracks, { albumMbids = [] } = {}) {
+const trackAlbumOwnerNames = (library, track) => library.albums
+  .filter((album) => album.trackIds?.includes(track.id))
+  .map((album) => library.artists.find((artist) => artist.id === album.artistId)?.name)
+  .filter(Boolean);
+
+async function removeLibraryDownloadJobs(library, tracks, { albumMbids = [] } = {}) {
   const normalize = (value) => String(value || "").trim().toLocaleLowerCase();
   const trackKeys = tracks.map((track) => ({
     mbid: normalize(track?.mbid),
-    artistName: normalize(track?.artistName),
+    artistNames: new Set([track?.artistName, ...trackAlbumOwnerNames(library, track)].map(normalize).filter(Boolean)),
     title: normalize(track?.title),
   }));
   const albumKeys = new Set([albumMbids].flat().map(normalize).filter(Boolean));
@@ -494,7 +499,7 @@ async function removeLibraryDownloadJobs(tracks, { albumMbids = [] } = {}) {
     const matchesTrack = !belongsElsewhere && trackKeys.some((track) =>
       track.mbid && jobTrackMbid
         ? jobTrackMbid === track.mbid
-        : normalize(job.artistName) === track.artistName && normalize(job.trackName) === track.title,
+        : track.artistNames.has(normalize(job.artistName)) && normalize(job.trackName) === track.title,
     );
     const matchesAlbum = albumKey && job.managedBy === "aurral" && albumKeys.has(normalize(job.albumMbid));
     if (matchesTrack || matchesAlbum) {
@@ -2472,7 +2477,7 @@ export class LibraryManager {
       let cleanupFailed = false;
       if (aurralAlbums.length === 0) {
         if (!monitored) {
-          const cancellation = await cancelLibraryTrackJobs(track);
+          const cancellation = await cancelLibraryTrackJobs(track, trackAlbumOwnerNames(library, track));
           cancelledJobIds.push(...cancellation.cancelledJobIds);
           cleanupFailed = cancellation.cleanupFailed;
         }
@@ -2559,7 +2564,7 @@ export class LibraryManager {
     if (resolved.error) return resolved;
     const { album, artist, library, mappedAlbum } = resolved;
     const artistState = getLibraryManagementEntry("artist", Number(album.artistId));
-    const result = await this._removeAurralAlbumContents(album, library.tracks, deleteFiles);
+    const result = await this._removeAurralAlbumContents(album, library, deleteFiles);
     if (result.error) return result;
     const excluded = addMonitoringExclusion({
       kind: "album",
@@ -2572,11 +2577,11 @@ export class LibraryManager {
     return { success: true, canonicalId: mappedAlbum.canonicalId, excluded };
   }
 
-  async _removeAurralAlbumContents(album, libraryTracks, deleteFiles) {
-    const tracks = libraryTracks.filter((track) => album.trackIds.includes(track.id));
+  async _removeAurralAlbumContents(album, library, deleteFiles) {
+    const tracks = library.tracks.filter((track) => album.trackIds.includes(track.id));
     let committedPaths;
     try {
-      committedPaths = await removeLibraryDownloadJobs(tracks, {
+      committedPaths = await removeLibraryDownloadJobs(library, tracks, {
         albumMbids: albumJobKeys(album),
       });
     } catch (error) {
@@ -2631,7 +2636,7 @@ export class LibraryManager {
     const library = libraryForArtist(artist.id);
     for (const album of library.albums) {
       if (album.managedBy === "lidarr") continue;
-      const result = await this._removeAurralAlbumContents(album, library.tracks, deleteFiles);
+      const result = await this._removeAurralAlbumContents(album, library, deleteFiles);
       if (result.error) {
         return { success: false, code: result.code, statusCode: result.statusCode, error: result.error };
       }
@@ -3459,7 +3464,7 @@ export class LibraryManager {
       if (aurralFiles.length > 0 && lidarrFiles.length === 0) {
         let committedPaths;
         try {
-          committedPaths = await removeLibraryDownloadJobs([track]);
+          committedPaths = await removeLibraryDownloadJobs(library, [track]);
         } catch (error) {
           logger.error("library", `[LibraryManager] Failed to cancel track downloads: ${error.message}`);
           return {
@@ -3485,7 +3490,7 @@ export class LibraryManager {
             kind: "track",
             mbid: track.mbid,
             artistMbid: artist?.mbid,
-            artistName: track.artistName || artist?.name,
+            artistName: artist?.name || track.artistName,
             title: track.title,
           });
           return { success: true };

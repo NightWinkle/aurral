@@ -765,10 +765,10 @@ function LibraryPage() {
           const album = getAlbumForTrack(track, lookup?.albumsById);
           const artist = getArtistForAlbum(album, lookup?.artistsById);
           return buildStaticPlaylistTrackPayload({
-            artistName: track?.artistName || artist?.name || "",
+            artistName: artist?.name || track?.artistName || "",
             trackName: track?.title || "",
             albumName: album?.title || "",
-            artistMbid: trackArtistMbid(track, artist) || "",
+            artistMbid: artist?.mbid || "",
             albumMbid: album?.releaseGroupMbid || album?.mbid || "",
             trackMbid: track?.mbid || "",
             releaseYear: yearOf(album?.releaseDate),

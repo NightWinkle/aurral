@@ -122,7 +122,7 @@ test("track information uses the performer credit", async ({ page }) => {
     .toHaveText("ArtistGuest & Owner");
 });
 
-test("playlist payloads pair the credit with an artist MBID only when it matches the owner", async ({ page }) => {
+test("playlist payloads keep the album owner's acquisition identity", async ({ page }) => {
   const writes = await fixture(page);
   await page.goto("/library/tracks");
   for (const entry of [guest, owner]) {
@@ -132,7 +132,7 @@ test("playlist payloads pair the credit with an artist MBID only when it matches
     await expect.poll(() => writes.length).toBe(entry === guest ? 1 : 2);
   }
   expect(writes[0].body.name).toBe("Guest & Owner Picks");
-  expect(writes[0].body.tracks[0]).toMatchObject({ artistName: "Guest & Owner", artistMbid: "",
+  expect(writes[0].body.tracks[0]).toMatchObject({ artistName: "Owner", artistMbid: ownerMbid,
     trackName: "A guest song", albumName: "Album", albumMbid, trackMbid });
   expect(writes[1].body.tracks[0]).toMatchObject({ artistName: "Owner", artistMbid: ownerMbid });
 });

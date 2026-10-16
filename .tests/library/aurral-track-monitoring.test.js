@@ -223,7 +223,13 @@ test("unmonitoring a track without an MBID leaves a same-titled track's download
 });
 
 test("a track in a Lidarr album is unmonitored by Aurral without calling Lidarr", async () => {
-  const { tracks, jobIds } = await createAlbum({ managedBy: "lidarr", tracks: ["pending"] });
+  const { artist, tracks, jobIds } = await createAlbum({ managedBy: "lidarr", tracks: ["pending"] });
+  libraryStore.upsertLibraryTrack({ identityKey: tracks[0].identity_key, mbid: tracks[0].mbid,
+    title: tracks[0].title, artistName: `${artist.name} feat. Guest` });
+  const ownerJob = downloadTracker.addJob(
+    { artistName: artist.name, trackName: tracks[0].title },
+    "library",
+  );
   const otherArtistJob = downloadTracker.addJob(
     { artistName: "Another Artist", trackName: tracks[0].title },
     "library",
@@ -234,6 +240,7 @@ test("a track in a Lidarr album is unmonitored by Aurral without calling Lidarr"
   assert.equal(result.error, undefined);
   assert.equal(trackMonitored(tracks[0].id), 0);
   assert.equal(downloadTracker.getJob(jobIds[0]).status, "cancelled");
+  assert.equal(downloadTracker.getJob(ownerJob).status, "cancelled");
   assert.equal(downloadTracker.getJob(otherArtistJob).status, "pending");
   assert.deepEqual(lidarrCalls, []);
 });

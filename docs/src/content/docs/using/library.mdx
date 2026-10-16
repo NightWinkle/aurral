@@ -187,6 +187,8 @@ Each album appears once, and each song appears once on its album:
 - A song without a file leaves an album when the album's release does not list it and you did not ask Aurral or Lidarr for the album, such as a song an earlier Lidarr connection listed without downloading. Otherwise it stays as a missing track.
 - When a folder that Aurral scans has nothing in it, as when a drive is disconnected, Aurral keeps its music and plays it again when the files come back.
 
+A track shows the performer from its artist tag, such as `Owner feat. Guest`, and stays on its album artist's album. Earlier versions showed the album artist. To show the performers of music already in the Library, run a **Full scan**.
+
 When a scan finishes, an open Library page reloads. **Recently added** sorting on albums, tracks, and artists and the home page use the time that a file entered the Library, not the release date.
 
 If Discover says that an album is in Lidarr but the Library does not show it, Aurral probably cannot read the Lidarr root folder. Run **Settings > Storage health > Run checks** and fix the **Lidarr library** section, then select **Refresh**. See [Filesystem and mounts](/getting-started/storage/).

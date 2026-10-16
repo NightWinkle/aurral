@@ -327,11 +327,18 @@ export const getArtistImage = async (
       }
 
       const resolvedArtistName = metadataArtist?.name || artistName || null;
-      const deezerImage = await fetchDeezerArtistImageUrl({
-        artistName: resolvedArtistName || "",
-        deezerArtistId:
-          override?.deezerArtistId || getLinkedDeezerArtistId(metadataArtist?.links),
-      });
+      let sawTransientError = false;
+      let deezerImage = null;
+      try {
+        deezerImage = await fetchDeezerArtistImageUrl({
+          artistName: resolvedArtistName || "",
+          deezerArtistId:
+            override?.deezerArtistId || getLinkedDeezerArtistId(metadataArtist?.links),
+          throwOnError: true,
+        });
+      } catch {
+        sawTransientError = true;
+      }
       if (deezerImage) {
         negativeImageCache.delete(mbid);
         const result = buildArtistCoverFromUrl(
@@ -366,7 +373,6 @@ export const getArtistImage = async (
 
       let nextIndex = 0;
       let foundCover = null;
-      let sawTransientError = false;
       const workers = Array.from(
         { length: Math.min(RELEASE_GROUP_CONCURRENCY, ordered.length) },
         async () => {

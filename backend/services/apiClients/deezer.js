@@ -11,6 +11,8 @@ const deezerTopTrackCache = createCache(3600);
 const deezerInflightRequests = new Map();
 const deezerTrackListLimiter = createRateLimiter(110);
 
+const isDeezerOutage = (data) => Boolean(data?.error) && data.error.code !== 800;
+
 async function cachedOrInflight(cache, key, inflight, fn) {
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
@@ -97,9 +99,7 @@ export async function getDeezerArtistById(artistId, { throwOnError = false } = {
           timeout: 3000,
         },
       );
-      if (res.data?.error && res.data.error.code !== 800) {
-        throw new Error("Deezer artist unavailable");
-      }
+      if (isDeezerOutage(res.data)) throw new Error("Deezer artist unavailable");
       const data = res.data;
       if (!data?.id) {
         deezerArtistCache.set(cacheKey, null);
@@ -170,6 +170,7 @@ async function findDeezerArtistIdByExactName(artistName) {
         timeout: 5000,
       }),
     );
+    if (isDeezerOutage(response.data)) throw new Error("Deezer artist search unavailable");
     const match = (response.data?.data || []).find(
       (artist) => artist?.id && artistNameKey(artist.name) === wanted,
     );
@@ -194,6 +195,7 @@ export async function deezerGetArtistTopTrackList(artistName, { limit = 25 } = {
           timeout: 5000,
         }),
       );
+      if (isDeezerOutage(response.data)) throw new Error("Deezer popular tracks unavailable");
       const tracks = (response.data?.data || [])
         .filter((track) => String(track?.title || "").trim())
         .map((track) => ({
@@ -219,11 +221,10 @@ export async function deezerGetArtistTopTracks(artistName) {
   }
 }
 
-export async function deezerGetArtistTopTracksById(artistId, { throwOnError = false } = {}) {
+export async function deezerGetArtistTopTracksById(artistId) {
   try {
     return await getDeezerArtistTopTracksById(artistId);
-  } catch (error) {
-    if (throwOnError) throw error;
+  } catch {
     return [];
   }
 }

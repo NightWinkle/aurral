@@ -17,10 +17,11 @@ const provider = await createMockHttpServer((req, res) => {
 });
 process.env.BRAINZMASH_BASE_URL = provider.url;
 const [state, { default: axios }, deezer, { getArtistImage }, { dbOps }, { db },
-  { clearMetadataProviderCaches }] = await setupIsolatedBackend(
+  { clearMetadataProviderCaches }, { listenbrainzSource }] = await setupIsolatedBackend(
   "artist-provider-errors", "lib/axiosFetch.js", "backend/services/apiClients/deezer.js",
   "backend/services/imageService.js", "backend/db/helpers/index.js",
   "backend/config/db-sqlite.js", "backend/services/providers/brainzmashProvider.js",
+  "backend/services/musicDataSource/listenbrainz.js",
 );
 
 test.beforeEach(() => {
@@ -139,11 +140,42 @@ test("a top-track error in HTTP 200 does not cache an empty track list", async t
   assert.equal(tracks[0]?.title, "Recovered Song");
 });
 
-test("a strict top-track caller receives provider errors", async t => {
-  responses(t, () => { throw new Error("Top tracks unavailable"); });
-  await assert.rejects(deezer.deezerGetArtistTopTracksById(101, { throwOnError: true }), /Top tracks unavailable/);
-  assert.deepEqual(await deezer.deezerGetArtistTopTracksById(101), []);
-});
+const artistTopTracks = async () =>
+  (await listenbrainzSource.getArtistTopTracks({ name: "Provider Artist" })).map(track => track.name);
+
+for (const [endpoint, path] of [["an artist search", "/search/artist"], ["a top-track", "/artist/101/top"]]) {
+  for (const code of [4, 700]) {
+    test(endpoint + " error " + code + " in HTTP 200 leaves artist top tracks retryable", async t => {
+      let failed = true;
+      responses(t, url => {
+        if (failed && url.endsWith(path)) return { error: { code, message: "Provider unavailable" } };
+        return url.endsWith("/search/artist")
+          ? { data: [{ id: 101, name: "Provider Artist" }] }
+          : { data: [{ id: 7, title: "Recovered Song", album: { title: "Album" }, rank: 900 }] };
+      });
+      assert.deepEqual(await artistTopTracks(), []);
+      failed = false;
+      assert.deepEqual(await artistTopTracks(), ["Recovered Song"]);
+    });
+  }
+}
+
+for (const [absence, path, body] of [
+  ["an artist search with no results", "/search/artist", { data: [], total: 0 }],
+  ["an artist with no top tracks", "/artist/101/top", { data: [], total: 0 }],
+  ["an unknown artist ID", "/artist/101/top", missingArtist],
+]) {
+  test(absence + " is cached as having no top tracks", async t => {
+    const requests = [];
+    responses(t, url => {
+      requests.push(new URL(url).pathname);
+      return url.endsWith(path) ? body : { data: [{ id: 101, name: "Provider Artist" }] };
+    });
+    assert.deepEqual(await artistTopTracks(), []);
+    assert.deepEqual(await artistTopTracks(), []);
+    assert.deepEqual(requests, path === "/search/artist" ? [path] : ["/search/artist", path]);
+  });
+}
 
 test("a catalog error in HTTP 200 remains retryable instead of caching an empty catalog", async t => {
   let failed = true;

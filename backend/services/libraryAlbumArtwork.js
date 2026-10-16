@@ -3,8 +3,10 @@ import path from "node:path";
 import { parseFile, selectCover } from "music-metadata";
 import { db } from "../config/db-sqlite.js";
 import getSharp from "./sharpConfig.js";
+import createCache from "./apiClients/simpleCache.js";
 
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const missingArtwork = createCache(60);
 
 async function renderCover(data) {
   const sharp = await getSharp();
@@ -15,6 +17,8 @@ async function renderCover(data) {
 
 export async function getLibraryAlbumArtwork(albumId) {
   if (!/^[1-9]\d*$/.test(String(albumId))) return null;
+  const key = String(albumId);
+  if (missingArtwork.get(key)) return null;
   // shortcut: inspect at most 100 indexed files; extend for box sets with artwork only on later discs.
   const files = db.prepare(`SELECT path FROM library_media_files
     WHERE album_id = ? AND available = 1 ORDER BY path COLLATE NOCASE LIMIT 100`).all(albumId);
@@ -44,5 +48,6 @@ export async function getLibraryAlbumArtwork(albumId) {
       }
     }
   }
+  missingArtwork.set(key, true);
   return null;
 }

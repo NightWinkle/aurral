@@ -122,7 +122,8 @@ test("cover endpoint reads an album sidecar and resizes it to fit 512 pixels", a
   assert.equal(metadata.height, 384);
 });
 
-test("cover endpoint refuses unknown albums, external sidecars and anonymous or invalid tokens", async () => {
+test("cover endpoint refuses unknown albums, external sidecars and anonymous or invalid tokens", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
   assert.equal((await requestCover("../etc/passwd", null, { authorization: `Bearer ${session.token}` })).statusCode, 404);
   assert.equal((await requestCover(999999)).statusCode, 404);
   const album = await albumFixture("symlink", [null]);
@@ -133,10 +134,12 @@ test("cover endpoint refuses unknown albums, external sidecars and anonymous or 
   assert.equal((await requestCover(album.id, null)).statusCode, 401);
   assert.equal((await requestCover(album.id, "invalid-token")).statusCode, 401);
   await writeFile(path.join(album.folder, "folder.png"), image);
+  t.mock.timers.tick(60_001);
   assert.equal((await requestCover(album.id, null, { authorization: `Bearer ${session.token}` })).statusCode, 200);
 });
 
-test("invalid images and sidecars exceeding byte or pixel limits are skipped for a later valid cover", async () => {
+test("invalid images and sidecars exceeding byte or pixel limits are skipped for a later valid cover", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
   const album = await albumFixture("invalid", [null]);
   await writeFile(path.join(album.folder, "cover.jpg"), "invalid image");
   const oversized = path.join(album.folder, "cover.png");
@@ -144,12 +147,14 @@ test("invalid images and sidecars exceeding byte or pixel limits are skipped for
   await truncate(oversized, 25 * 1024 * 1024 + 1);
   assert.equal((await requestCover(album.id)).statusCode, 404);
   await truncate(oversized, 25 * 1024 * 1024);
+  t.mock.timers.tick(60_001);
   assert.equal((await requestCover(album.id)).statusCode, 200);
   await rm(oversized);
   await sharp({ create: { width: 8001, height: 5000, channels: 3, background: "red" } })
     .png().toFile(path.join(album.folder, "folder.jpg"));
   assert.equal((await requestCover(album.id)).statusCode, 404);
   await writeFile(path.join(album.folder, "folder.png"), image);
+  t.mock.timers.tick(60_001);
   assert.equal((await requestCover(album.id)).statusCode, 200);
 });
 
@@ -168,12 +173,26 @@ test("cover endpoint rejects expired sessions and disabled user accounts", async
   }
 });
 
-test("cover scan ignores unavailable files and inspects at most 100 indexed files", async () => {
+test("cover scan ignores unavailable files and inspects at most 100 indexed files", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
   const unavailable = await albumFixture("unavailable", [image]);
   db.prepare("UPDATE library_media_files SET available = 0 WHERE album_id = ?").run(unavailable.id);
   assert.equal((await requestCover(unavailable.id)).statusCode, 404);
   const bounded = await albumFixture("bounded", [...Array(100).fill(null), image]);
   assert.equal((await requestCover(bounded.id)).statusCode, 404);
   await writeFile(path.join(bounded.folder, "099.mp3"), audioWithPicture(image));
+  t.mock.timers.tick(60_001);
   assert.equal((await requestCover(bounded.id)).statusCode, 200);
+});
+
+test("missing artwork is cached briefly and newly added artwork becomes visible after expiry", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const album = await albumFixture("missing-artwork-cache", [null]);
+  const missing = await requestCover(album.id);
+  assert.equal(missing.statusCode, 404);
+  await writeFile(path.join(album.folder, "cover.png"), image);
+
+  assert.equal((await requestCover(album.id)).statusCode, 404);
+  t.mock.timers.tick(60_001);
+  assert.equal((await requestCover(album.id)).statusCode, 200);
 });

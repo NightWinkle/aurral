@@ -23,9 +23,12 @@ import { useToast } from "../contexts/ToastContext";
 import TooltipButton from "./TooltipButton";
 
 function QueueArt({ src }) {
+  const [failedSrc, setFailedSrc] = useState(null);
   return (
     <span className="player-queue__art" aria-hidden="true">
-      {src ? <ArtworkImage src={src} sizes="3rem" alt="" loading="lazy" decoding="async" /> : <Music />}
+      {src && src !== failedSrc ? (
+        <ArtworkImage src={src} sizes="3rem" alt="" loading="lazy" decoding="async" onError={() => setFailedSrc(src)} />
+      ) : <Music />}
     </span>
   );
 }

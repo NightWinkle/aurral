@@ -72,3 +72,30 @@ test("unidentified local album artwork authenticates in the library and playing 
   await expect.poll(() => playerArt.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
   await page.screenshot({ path: test.info().outputPath("local-album-playing.png"), animations: "disabled" });
 });
+
+test("an album without local artwork retains its letter placeholder in the grid and header", async ({ page }) => {
+  await page.route("**/api/library/albums/42/cover**", route =>
+    route.fulfill({ status: 404, json: { error: "Album cover not found" } }));
+  await page.goto("/library/albums");
+  const card = page.getByRole("article");
+  await expect(card.getByRole("img", { name: album.title, exact: true })).toHaveText("U");
+  await page.screenshot({ path: test.info().outputPath("no-artwork-library.png"), animations: "disabled" });
+  await card.getByRole("link", { name: "Open Unidentified Album", exact: true }).click();
+  await expect(page.locator(".native-library-detail__cover")
+    .getByRole("img", { name: album.title, exact: true })).toHaveText("U");
+});
+
+test("playing an album without local artwork retains the player and queue music placeholders", async ({ page }) => {
+  await page.route("**/api/library/albums/42/cover**", route =>
+    route.fulfill({ status: 404, json: { error: "Album cover not found" } }));
+  await page.goto("/library/album/42");
+  await page.getByRole("button", { name: "Play Local Song", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
+  const art = page.locator(".global-player__art--bar");
+  await expect(art.locator("img")).toHaveCount(0);
+  await expect(art.locator("svg")).toBeVisible();
+  await page.getByRole("button", { name: "Queue", exact: true }).click();
+  await expect(page.locator(".player-queue__art img")).toHaveCount(0);
+  await expect(page.locator(".player-queue__art svg").first()).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("no-artwork-playing.png"), animations: "disabled" });
+});

@@ -13,9 +13,12 @@ const execFileAsync = promisify(execFile);
 const [state, { dbOps, userOps }, { downloadTracker }, { getDownloadClient },
   { processUsenetPipelinePayload }, { processPipelinePayload }, { downloadWorker },
   { buildSlskdRankingHistoryOptions }, { prowlarrClient },
-  { beginDownloadAttempt, getActiveDownloadAttemptId, setActiveDownloadAttemptId },
+  { beginDownloadAttempt, cancelPlaylistDownloadGeneration, getActiveDownloadAttemptId, setActiveDownloadAttemptId },
   { queueQualityUpgrade, runQualityUpgradeCheck }, { resolveDownloadRoot }, { registerJobs },
-  { flowPlaylistConfig }] = await setupIsolatedBackend(
+  { flowPlaylistConfig }, { getHonkerDb, getPipelineQueue, listHonkerJobs },
+  { stopDownloadPipelineWorker }, { getAurralHistoryRequests },
+  { upsertLibraryArtist, upsertLibraryAlbum, upsertLibraryTrack, linkLibraryAlbumTrack, upsertLibraryMediaFile },
+  { libraryManager }] = await setupIsolatedBackend(
   "album-source-grabs",
   "backend/db/helpers/index.js",
   "backend/services/downloadJobs/downloadTracker.js",
@@ -30,6 +33,11 @@ const [state, { dbOps, userOps }, { downloadTracker }, { getDownloadClient },
   "backend/services/downloadPaths.js",
   "backend/routes/playlists/handlers/jobs.js",
   "backend/services/playlists/flowPlaylistConfig.js",
+  "backend/services/honkerDb.js",
+  "backend/services/downloadPipelineWorker.js",
+  "backend/services/aurralHistoryService.js",
+  "backend/services/libraryMediaStore.js",
+  "backend/services/libraryManager.js",
 );
 
 test.after(async () => {
@@ -180,6 +188,17 @@ async function makeUpgrades(group, titles, { files = titles } = {}) {
   return { folder, upgradeIds, start };
 }
 
+async function holdDownloadWorker(t) {
+  await downloadWorker.waitForIdle();
+  if (downloadWorker.running) await downloadWorker.stopAndDrain();
+  const start = t.mock.method(downloadWorker, "start", async () => {});
+  return async () => {
+    start.mock.restore();
+    await downloadWorker.start();
+    await downloadWorker.waitForIdle();
+  };
+}
+
 function mockNzbget(t, folder, nzbIds = [77]) {
   const client = getDownloadClient("nzbget");
   t.mock.method(prowlarrClient, "downloadNzb", async () => Buffer.from("<nzb></nzb>"));
@@ -314,7 +333,9 @@ async function pinnedUpgrade(t, group, { releaseCodec = "flac" } = {}) {
   const siblingId = downloadTracker.addJob({ ...album, trackName: "First", trackNumber: 1 }, "library");
   const queued = [];
   t.mock.method(downloadTracker, "enqueuePipeline", (payload) => queued.push(payload));
+  const runWorker = await holdDownloadWorker(t);
   assert.equal(await queueQualityUpgrade(downloadTracker.getJob(sourceId)), "queued");
+  await runWorker();
   const [attempt] = queued;
   assert.deepEqual([attempt.albumGrab, attempt.releaseMbid, attempt.albumGroupJobIds],
     [true, releaseMbid, [attempt.jobId]]);
@@ -411,7 +432,14 @@ async function releaseUpgrades(t, group, {
     const job = downloadTracker.getJob(id);
     return [job.status, basename(job.finalPath), job.qualityTier];
   });
-  return { folder, sourceIds, queued, trackSearch, download, landed };
+  const queueEach = async () => {
+    for (const id of sourceIds) {
+      const runWorker = await holdDownloadWorker(t);
+      assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "queued");
+      await runWorker();
+    }
+  };
+  return { folder, sourceIds, queued, trackSearch, download, landed, queueEach };
 }
 
 // NZBGet downloads a release again into the folder of the same name, and
@@ -439,7 +467,7 @@ test("an upgrade started while another upgrade downloads the same release waits 
   const upgrades = await releaseUpgrades(t, "upgrade-each-release");
   const append = await oneFolderNzbget(t, "upgrade-each-release", upgrades);
 
-  for (const id of upgrades.sourceIds) assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "queued");
+  await upgrades.queueEach();
   assert.deepEqual(upgrades.queued.map((attempt) => [attempt.albumGrab, attempt.albumGroupJobIds.length]),
     [[true, 1], [true, 1]]);
   let [first, second] = upgrades.queued;
@@ -466,7 +494,9 @@ test("an upgrade pinned to another pressing of the album waits for the upgrade d
     { requestGroupIds: ["album-request", null], pins: [`${group}-cd`, `${group}-vinyl`] });
   const append = await oneFolderNzbget(t, group, upgrades);
 
+  const runWorker = await holdDownloadWorker(t);
   assert.equal(await runQualityUpgradeCheck({ force: true }), 2);
+  await runWorker();
   assert.deepEqual(upgrades.queued.map((attempt) => [attempt.releaseMbid, attempt.albumGroupJobIds.length]),
     [[`${group}-cd`, 1], [`${group}-vinyl`, 1]]);
   let [first, second] = upgrades.queued;
@@ -484,7 +514,7 @@ test("an upgrade pinned to another pressing of the album waits for the upgrade d
 
 test("an upgrade stops waiting once the upgrade ahead of it gives up on the release and searches for its track", async (t) => {
   const upgrades = await releaseUpgrades(t, "upgrade-ahead-falls-back");
-  for (const id of upgrades.sourceIds) assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "queued");
+  await upgrades.queueEach();
   let [first, second] = upgrades.queued;
   second = await processPipelinePayload(second);
   assert.equal(second.phase, "waiting");
@@ -497,7 +527,7 @@ test("an upgrade stops waiting once the upgrade ahead of it gives up on the rele
 
 test("an upgrade waiting for the upgrade ahead of it on the same album stops waiting after 30 minutes and searches anyway", async (t) => {
   const upgrades = await releaseUpgrades(t, "upgrade-wait-ends");
-  for (const id of upgrades.sourceIds) assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "queued");
+  await upgrades.queueEach();
   let second = upgrades.queued[1];
   let waitedSeconds = 0;
   let steps = 0;
@@ -518,23 +548,29 @@ test("the upgrade check skips the tracks of a user who is not active, and the Li
   const upgrades = await releaseUpgrades(t, "upgrade-check-inactive-owner",
     { requestGroupIds: ["playlist-request", null], owners: [playlist.id, "library"] });
 
+  const runWorker = await holdDownloadWorker(t);
   assert.equal(await runQualityUpgradeCheck({ force: true }), 1);
+  await runWorker();
   assert.deepEqual(upgrades.queued.map((attempt) => attempt.albumGroupJobIds
     .map((id) => downloadTracker.getJob(id).upgradeForJobId)), [[upgrades.sourceIds[1]]]);
   await processPipelinePayload(upgrades.queued[0]);
   assert.ok(upgrades.trackSearch.mock.callCount() > 0);
 });
 
-test("an upgrade of a user who is not active never leads a release attempt that the Library's upgrade of the album waits for", async (t) => {
+test("an upgrade of a user who is not active waits in the download worker's queue and never leads a release attempt that the Library's upgrade of the album waits for", async (t) => {
   const user = userOps.createUser("upgrade-queue-disabled", "hash");
   userOps.updateUser(user.id, { status: "disabled" });
   const playlist = flowPlaylistConfig.createStaticPlaylist({ name: "Disabled queue", ownerUserId: user.id });
   const upgrades = await releaseUpgrades(t, "upgrade-queue-inactive-owner",
     { requestGroupIds: ["playlist-request", null], owners: [playlist.id, "library"] });
 
-  for (const id of upgrades.sourceIds) assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "queued");
-  assert.deepEqual(upgrades.queued.map((attempt) => attempt.albumGrab === true), [false, true]);
-  const library = await processPipelinePayload(upgrades.queued[1]);
+  await upgrades.queueEach();
+  assert.deepEqual(upgrades.queued.map((attempt) => downloadTracker.getJob(attempt.jobId).upgradeForJobId),
+    [upgrades.sourceIds[1]]);
+  assert.equal(upgrades.queued[0].albumGrab, true);
+  const waiting = downloadTracker.findActiveUpgradeJob(downloadTracker.getJob(upgrades.sourceIds[0]));
+  assert.deepEqual([waiting.status, downloadTracker.isSlskdDispatched(waiting.id)], ["pending", false]);
+  const library = await processPipelinePayload(upgrades.queued[0]);
   assert.notEqual(library?.phase, "waiting");
   assert.ok(upgrades.trackSearch.mock.callCount() > 0);
 });
@@ -551,16 +587,14 @@ test("an upgrade whose user is disabled while the upgrade check runs is not held
     },
   });
 
+  const runWorker = await holdDownloadWorker(t);
   assert.equal(await runQualityUpgradeCheck({ force: true }), 2);
+  await runWorker();
   assert.deepEqual(upgrades.queued[0].albumGroupJobIds.map((id) => downloadTracker.getJob(id).upgradeForJobId),
     [upgrades.sourceIds[0]]);
 });
 
-test("Search all starts the upgrades of one release's tracks from different requests in the Library and a static playlist as one attempt and one Usenet download, and both land", async (t) => {
-  const playlist = flowPlaylistConfig.createStaticPlaylist({ name: "Upgrade mix" });
-  const upgrades = await releaseUpgrades(t, "upgrade-all-release",
-    { requestGroupIds: [null, "playlist-request"], owners: ["library", playlist.id] });
-  const { append } = mockNzbget(t, upgrades.folder);
+async function postUpgrades(t, path = "/quality-upgrades") {
   const app = express();
   app.use((req, _res, next) => {
     req.user = { role: "admin" };
@@ -573,9 +607,19 @@ test("Search all starts the upgrades of one release's tracks from different requ
     const listener = app.listen(0, "127.0.0.1", () => resolve(listener));
   });
   t.after(() => server.close());
+  const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, { method: "POST" });
+  return response.json();
+}
 
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/quality-upgrades`, { method: "POST" });
-  assert.equal((await response.json()).queued, 2);
+test("Search all starts the upgrades of one release's tracks from different requests in the Library and a static playlist as one attempt and one Usenet download, and both land", async (t) => {
+  const playlist = flowPlaylistConfig.createStaticPlaylist({ name: "Upgrade mix" });
+  const upgrades = await releaseUpgrades(t, "upgrade-all-release",
+    { requestGroupIds: [null, "playlist-request"], owners: ["library", playlist.id] });
+  const { append } = mockNzbget(t, upgrades.folder);
+
+  const runWorker = await holdDownloadWorker(t);
+  assert.equal((await postUpgrades(t)).queued, 2);
+  await runWorker();
   assert.equal(upgrades.queued.length, 1);
   const [attempt] = upgrades.queued;
   assert.deepEqual(attempt.albumGroupJobIds.map((id) => downloadTracker.getJob(id).upgradeForJobId), upgrades.sourceIds);
@@ -588,7 +632,96 @@ test("Search all starts the upgrades of one release's tracks from different requ
   assert.equal(downloadTracker.getAll().some((job) => job.upgradeForJobId), false);
 });
 
-test("the upgrade check starts each album's upgrades before it adds the next album's, and removes the ones it could not start", async (t) => {
+async function gateUpgradeSearches(t, groups) {
+  await downloadWorker.waitForIdle();
+  if (downloadWorker.running) await downloadWorker.stopAndDrain();
+  for (const job of downloadTracker.getAll()) downloadTracker.removeJob(job.id);
+  const clearSearches = () => {
+    const transaction = getHonkerDb().transaction();
+    transaction.execute("DELETE FROM _honker_live WHERE queue = 'slskd-pipeline'");
+    transaction.commit();
+  };
+  clearSearches();
+  await serveGroups(t, groups.map((group) => brainzmashGroup({ id: group, title: group, artist: "The Band",
+    artistId: "the-band", releases: [{ id: `${group}-release`, tracks: [{ title: "Only", durationMs: 1000 }] }] })));
+  useSlskd();
+  const { concurrency } = downloadWorker.getWorkerSettings();
+  downloadWorker.updateWorkerSettings({ concurrency: 1 });
+  let searchQueued = () => {};
+  t.mock.method(downloadTracker, "enqueuePipeline", (payload) => {
+    getPipelineQueue().enqueue(payload, { runAt: Math.floor(Date.now() / 1000) + 3600 });
+    searchQueued();
+  });
+  t.after(async () => {
+    await downloadWorker.stopAndDrain();
+    await stopDownloadPipelineWorker();
+    downloadWorker.updateWorkerSettings({ concurrency });
+    for (const job of downloadTracker.getAll()) downloadTracker.removeJob(job.id);
+    clearSearches();
+  });
+  return {
+    addSource: async (group) => {
+      const original = join(resolveDownloadRoot(), "The Band", group, "01 - Only.mp3");
+      await mkdir(dirname(original), { recursive: true });
+      await execFileAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+        "-c:a", "libmp3lame", "-b:a", "128k", original]);
+      const id = downloadTracker.addJob({ artistName: "The Band", albumName: group, albumMbid: group,
+        releaseMbid: `${group}-release`, trackName: "Only", trackNumber: 1, durationMs: 1000 }, "library");
+      downloadTracker.setDone(id, original, group);
+      downloadTracker.updateQuality(id, { tier: "mp3-128" });
+      return id;
+    },
+    searching: () => listHonkerJobs("slskd-pipeline").filter((entry) => entry.payload?.phase === "search")
+      .map((entry) => downloadTracker.getJob(entry.payload.jobId)?.upgradeForJobId),
+    waiting: () => downloadTracker.getAll().filter((job) => job.upgradeForJobId && job.status === "pending"
+      && !downloadTracker.isSlskdDispatched(job.id)).map((job) => job.upgradeForJobId),
+    moveSearchesToPoll: async () => {
+      const nextSearch = new Promise((resolve) => {
+        searchQueued = resolve;
+      });
+      const transaction = getHonkerDb().transaction();
+      transaction.execute("UPDATE _honker_live SET payload = json_set(payload, '$.phase', 'poll') WHERE queue = 'slskd-pipeline'");
+      transaction.commit();
+      await nextSearch;
+      await downloadWorker.waitForIdle();
+    },
+  };
+}
+
+test("Search all leaves its upgrades to the download worker, which starts one album's search at a time at concurrency 1", async (t) => {
+  const groups = ["gated-first", "gated-second", "gated-third"];
+  const gate = await gateUpgradeSearches(t, groups);
+  const sourceIds = [];
+  for (const group of groups) sourceIds.push(await gate.addSource(group));
+
+  assert.equal((await postUpgrades(t)).queued, 3);
+  await downloadWorker.waitForIdle();
+  assert.deepEqual(gate.searching(), [sourceIds[0]]);
+
+  await gate.moveSearchesToPoll();
+  assert.deepEqual(gate.searching(), [sourceIds[1]]);
+  assert.deepEqual(gate.waiting(), [sourceIds[2]]);
+});
+
+test("an upgrade asked for while Search all's upgrades wait for the worker starts next when a search ends", async (t) => {
+  const groups = ["backlog-first", "backlog-second", "backlog-third", "asked-for"];
+  const gate = await gateUpgradeSearches(t, groups);
+  const backlog = [];
+  for (const group of groups.slice(0, 3)) backlog.push(await gate.addSource(group));
+  assert.equal((await postUpgrades(t)).queued, 3);
+  await downloadWorker.waitForIdle();
+  const askedFor = await gate.addSource("asked-for");
+
+  assert.equal((await postUpgrades(t, `/quality-upgrades/library/${askedFor}`)).queued, 1);
+  await downloadWorker.waitForIdle();
+  assert.deepEqual(gate.searching(), [backlog[0]]);
+
+  await gate.moveSearchesToPoll();
+  assert.deepEqual(gate.searching(), [askedFor]);
+  assert.deepEqual(gate.waiting().sort(), backlog.slice(1).sort());
+});
+
+test("the upgrade check queues each album's upgrades for the worker before it adds the next album's, and one the worker cannot start is removed and keeps its file", async (t) => {
   for (const job of downloadTracker.getAll()) downloadTracker.removeJob(job.id);
   const groups = ["started-first", "started-second"];
   const seen = { queuedWhenSecondRead: null };
@@ -596,7 +729,9 @@ test("the upgrade check starts each album's upgrades before it adds the next alb
   await serveGroups(t, groups.map((group) => brainzmashGroup({ id: group, title: group, artist: "The Band",
     artistId: "the-band", releases: [{ id: `${group}-release`, tracks: [{ title: "Only", durationMs: 1000 }] }] })),
   { missing: (pathname) => {
-    if (pathname === "/album/started-second") seen.queuedWhenSecondRead ??= queued.length;
+    if (pathname === "/album/started-second") {
+      seen.queuedWhenSecondRead ??= downloadTracker.peekPending().filter((job) => job.upgradeForJobId).length;
+    }
     return false;
   } });
   const settings = dbOps.getSettings();
@@ -620,19 +755,23 @@ test("the upgrade check starts each album's upgrades before it adds the next alb
     queued.push(payload);
   });
 
-  await assert.rejects(runQualityUpgradeCheck({ force: true }), /queue unavailable/);
+  const runWorker = await holdDownloadWorker(t);
+  assert.equal(await runQualityUpgradeCheck({ force: true }), 2);
+  await runWorker();
   assert.equal(seen.queuedWhenSecondRead, 1);
   assert.deepEqual(queued.map((payload) => downloadTracker.getJob(payload.jobId).upgradeForJobId), [sourceIds[0]]);
   assert.deepEqual(downloadTracker.getAll().filter((job) => job.upgradeForJobId).map((job) => job.upgradeForJobId),
     [sourceIds[0]]);
+  assert.deepEqual([downloadTracker.getJob(sourceIds[1]).status, basename(downloadTracker.getJob(sourceIds[1]).finalPath)],
+    ["done", "01 - Only.mp3"]);
 });
 
-test("an upgrade removed while its release details are read is not queued", async (t) => {
+test("a track removed while its upgrade's release details are read gets no upgrade", async (t) => {
   for (const job of downloadTracker.getAll()) downloadTracker.removeJob(job.id);
-  const removing = { upgrade: null };
+  const removing = { track: null };
   await serveGroups(t, [], { missing: () => {
-    const upgrade = downloadTracker.getAll().find((job) => job.upgradeForJobId);
-    if (upgrade) removing.upgrade = downloadTracker.removeJob(upgrade.id) && upgrade.id;
+    const track = downloadTracker.getAll().find((job) => job.status === "done");
+    if (track) removing.track = downloadTracker.removeJob(track.id) && track.id;
     return true;
   } });
   const settings = dbOps.getSettings();
@@ -650,9 +789,91 @@ test("an upgrade removed while its release details are read is not queued", asyn
   const queued = t.mock.method(downloadTracker, "enqueuePipeline", () => {});
 
   assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "ineligible");
-  assert.ok(removing.upgrade);
+  assert.equal(removing.track, id);
   assert.equal(queued.mock.callCount(), 0);
+  assert.deepEqual(downloadTracker.getAll(), []);
+});
+
+test("a track whose file is kept while its upgrade's release details are read gets no upgrade", async (t) => {
+  for (const job of downloadTracker.getAll()) downloadTracker.removeJob(job.id);
+  const original = join(resolveDownloadRoot(), "The Band", "kept-upgrade", "01 - First.mp3");
+  const artist = upsertLibraryArtist({ identityKey: "name:kept-upgrade", name: "The Band", syncSearch: false });
+  const album = upsertLibraryAlbum({ identityKey: "name:kept-upgrade:album", artistId: artist.id,
+    title: "kept-upgrade", syncSearch: false });
+  const track = upsertLibraryTrack({ identityKey: "name:kept-upgrade:first", title: "First",
+    artistName: "The Band", syncSearch: false });
+  linkLibraryAlbumTrack({ albumId: album.id, trackId: track.id, syncSearch: false });
+  upsertLibraryMediaFile({ trackId: track.id, albumId: album.id, source: "aurral", path: original, available: true });
+  const keeping = { result: null };
+  await serveGroups(t, [], { missing: () => {
+    keeping.result ??= libraryManager.setTrackKeepFile(String(track.id), { keepFile: true });
+    return true;
+  } });
+  useSlskd();
+  await mkdir(dirname(original), { recursive: true });
+  await execFileAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+    "-c:a", "libmp3lame", "-b:a", "128k", original]);
+  const id = downloadTracker.addJob({ artistName: "The Band", albumName: "kept-upgrade", albumMbid: "kept-upgrade",
+    trackName: "First", trackNumber: 1, durationMs: 1000 }, "library");
+  downloadTracker.setDone(id, original, "kept-upgrade");
+  downloadTracker.updateQuality(id, { tier: "mp3-128" });
+  const runWorker = await holdDownloadWorker(t);
+
+  assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "kept");
+  assert.equal((await keeping.result)?.keepFile, true);
+  await runWorker();
+  assert.equal(downloadTracker.findActiveUpgradeJob(downloadTracker.getJob(id)), null);
   assert.equal(downloadTracker.getJob(id).finalPath, original);
+});
+
+test("an upgrade still waiting for the worker when every download source is turned off ends as no upgrade and keeps its file", async (t) => {
+  for (const job of downloadTracker.getAll()) downloadTracker.removeJob(job.id);
+  await serveGroups(t, []);
+  useSlskd();
+  const original = join(resolveDownloadRoot(), "The Band", "sources-off-upgrade", "01 - First.mp3");
+  await mkdir(dirname(original), { recursive: true });
+  await execFileAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+    "-c:a", "libmp3lame", "-b:a", "128k", original]);
+  const id = downloadTracker.addJob({ artistName: "The Band", albumName: "sources-off-upgrade",
+    albumMbid: "sources-off-upgrade", trackName: "First", trackNumber: 1, durationMs: 1000 }, "library");
+  downloadTracker.setDone(id, original, "sources-off-upgrade");
+  downloadTracker.updateQuality(id, { tier: "mp3-128" });
+  const runWorker = await holdDownloadWorker(t);
+  assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "queued");
+  const upgradeId = downloadTracker.findActiveUpgradeJob(downloadTracker.getJob(id)).id;
+  const queued = t.mock.method(downloadTracker, "enqueuePipeline", () => {});
+  const settings = dbOps.getSettings();
+  dbOps.updateSettings({ ...settings, integrations: { ...settings.integrations,
+    ...Object.fromEntries(["slskd", "ytdlp", "deemix", "nzbget", "sabnzbd", "prowlarr"]
+      .map((id) => [id, { ...settings.integrations?.[id], enabled: false }])) } });
+
+  await runWorker();
+
+  assert.equal(queued.mock.callCount(), 0);
+  assert.equal(downloadTracker.findActiveUpgradeJob(downloadTracker.getJob(id)), null);
+  assert.equal(downloadTracker.getJob(id).finalPath, original);
+  const entry = (await getAurralHistoryRequests()).find((item) => item.jobId === upgradeId);
+  assert.deepEqual([entry?.status, entry?.title], ["failed", "No upgrade found for First"]);
+});
+
+test("a static playlist track whose downloads were cancelled gets no upgrade", async (t) => {
+  for (const job of downloadTracker.getAll()) downloadTracker.removeJob(job.id);
+  await serveGroups(t, []);
+  useSlskd();
+  const playlist = flowPlaylistConfig.createStaticPlaylist({ name: "Cancelled mix" });
+  const original = join(resolveDownloadRoot(), "The Band", "cancelled-upgrade", "01 - First.mp3");
+  await mkdir(dirname(original), { recursive: true });
+  await execFileAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc", "-t", "1",
+    "-c:a", "libmp3lame", "-b:a", "128k", original]);
+  const id = downloadTracker.addJob({ artistName: "The Band", albumName: "cancelled-upgrade",
+    albumMbid: "cancelled-upgrade", trackName: "First", trackNumber: 1, durationMs: 1000 }, playlist.id);
+  downloadTracker.setDone(id, original, "cancelled-upgrade");
+  downloadTracker.updateQuality(id, { tier: "mp3-128" });
+  cancelPlaylistDownloadGeneration(playlist.id);
+
+  assert.equal(await queueQualityUpgrade(downloadTracker.getJob(id)), "ineligible");
+  assert.deepEqual(downloadTracker.getAll().filter((job) => job.upgradeForJobId), []);
+  assert.equal(downloadTracker.getJob(id).qualityUpgradeCheckedAt ?? null, null);
 });
 
 test("a Usenet download of a second-disc track takes the disc in its name", async (t) => {

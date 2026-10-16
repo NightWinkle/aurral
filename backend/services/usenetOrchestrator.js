@@ -47,6 +47,7 @@ import { attemptRelease } from "./releaseResolver.js";
 
 const MIN_USENET_CANDIDATES = 2;
 const MAX_DOWNLOAD_CANDIDATES = 5;
+const MAX_TRACK_NZB_GRABS = 2;
 const POLL_DELAY_SECONDS = 5;
 const MAX_MISSING_POLLS = 60;
 const UNREAD_POLL_DELAY_SECONDS = 30;
@@ -162,6 +163,10 @@ export async function removeReviewedUsenetDownload(job) {
 }
 
 const RELEASE_RESET = Object.freeze({ nzbId: null, history: null, missingPolls: 0, unreadPolls: 0 });
+
+const hasNextRelease = (payload) => hasNextCandidate(payload)
+  && (payload.albumGrab === true || Number(payload.nzbGrabs || 0) < MAX_TRACK_NZB_GRABS);
+const withNzbGrab = (payload) => ({ ...payload, nzbGrabs: Number(payload.nzbGrabs || 0) + 1 });
 
 // A release that failed or held no matching file is blocked for every track
 // it was meant to fill.
@@ -415,6 +420,7 @@ async function handleUsenetSearch(payload, helpers) {
     source: "usenet",
     candidates,
     candidateIndex: 0,
+    nzbGrabs: 0,
     resolvedTrack,
   };
 }
@@ -483,7 +489,8 @@ async function handleUsenetDownload(payload, helpers) {
   }
   let submission;
   try {
-    const nzb = await prowlarrClient.downloadNzb(release.downloadUrl);
+    const nzb = await prowlarrClient.downloadNzb(release.downloadUrl, release);
+    payload = withNzbGrab(payload);
     if (!isPipelinePayloadActive(payload)) return null;
     submission = await withPipelineCommitLock(payload, async () => {
       const appended = await client.appendNzb({
@@ -496,6 +503,7 @@ async function handleUsenetDownload(payload, helpers) {
       return appended;
     });
   } catch (error) {
+    if (error?.nzbGrabSpent) payload = withNzbGrab(payload);
     const message = error?.message || String(error);
     logger.warn("usenet", "Usenet release could not be sent to the download client", {
       jobId: job.id,
@@ -503,7 +511,7 @@ async function handleUsenetDownload(payload, helpers) {
       releaseTitle: release.title,
       error: message,
     });
-    if (hasNextCandidate(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
+    if (hasNextRelease(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
     return helpers.failOrTryNextSource(payload, job, message);
   } finally {
     if (claimed) {
@@ -551,7 +559,7 @@ async function handleUsenetPoll(payload, helpers) {
     if (state === "failed") {
       await removeUsenetItem(payload, job.id, { deleteFiles: true, historyItem });
       blockRelease(payload, job);
-      if (hasNextCandidate(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
+      if (hasNextRelease(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
       return helpers.failOrTryNextSource(
         payload,
         job,
@@ -565,7 +573,7 @@ async function handleUsenetPoll(payload, helpers) {
   const present = Boolean(historyItem) || Boolean(queueItem);
   const missingPolls = present ? 0 : Number(payload.missingPolls || 0) + 1;
   if (missingPolls > MAX_MISSING_POLLS) {
-    if (hasNextCandidate(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
+    if (hasNextRelease(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
     return helpers.failOrTryNextSource(payload, job, "The Usenet download left the download client");
   }
   return {
@@ -627,7 +635,7 @@ async function handleUsenetFinalize(payload, helpers) {
         transferId: payload.nzbId,
       }),
     };
-    return hasNextCandidate(payload)
+    return hasNextRelease(payload)
       ? buildNextCandidatePayload(heldPayload, RELEASE_RESET)
       : helpers.failOrTryNextSource(heldPayload, job, heldPayload.heldForReview.reason);
   }
@@ -636,7 +644,7 @@ async function handleUsenetFinalize(payload, helpers) {
       || "Usenet download completed, but no matching audio file was found";
     await removeUsenetItem(payload, job.id, { deleteFiles: true, historyItem });
     if (audioFiles.length > 0) blockRelease(payload, job);
-    if (hasNextCandidate(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
+    if (hasNextRelease(payload)) return buildNextCandidatePayload(payload, RELEASE_RESET);
     return helpers.failOrTryNextSource(payload, job, reason);
   }
 

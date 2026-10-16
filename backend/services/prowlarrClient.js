@@ -8,6 +8,25 @@ const DEFAULT_MAX_RESULTS = 60;
 let connectionCache = { checkedAt: 0, result: null };
 let indexerCache = { key: null, at: 0, indexers: [] };
 const INDEXER_CACHE_MS = 5 * 60 * 1000;
+const NZB_LIMIT_FALLBACK_MS = 60 * 60 * 1000;
+const NZB_LIMIT_MAX_MS = 24 * 60 * 60 * 1000;
+const nzbLimitedUntil = new Map();
+
+function readRetryAfterMs(value) {
+  const text = String(value ?? "").trim();
+  const seconds = Number(text);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(text) - Date.now();
+  if (!text || !Number.isFinite(ms)) return NZB_LIMIT_FALLBACK_MS;
+  return Math.min(Math.max(ms, 0), NZB_LIMIT_MAX_MS);
+}
+
+function nzbLimitError(indexer, until) {
+  const minutes = Math.ceil((until - Date.now()) / 60000);
+  const message = `${indexer || "The indexer"} has reached its NZB limit.`;
+  if (minutes <= 0) return new Error(message);
+  const wait = minutes >= 120 ? `${Math.round(minutes / 60)} hours` : `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  return new Error(`${message} Aurral will ask it again in ${wait}.`);
+}
 
 function normalizePositiveInteger(value, fallback) {
   const parsed = normalizeInteger(value, null);
@@ -373,20 +392,31 @@ export class ProwlarrClient {
 
   // Like Lidarr, Aurral fetches the NZB itself and hands the download client
   // the file, so the client never needs to reach Prowlarr at Aurral's address.
-  async downloadNzb(downloadUrl) {
+  async downloadNzb(downloadUrl, { indexerId = null, indexer = "" } = {}) {
     const url = String(downloadUrl || "").trim();
     if (!url) throw new Error("No Usenet release URL available");
+    const limitKey = String(indexerId ?? "").trim();
+    const limitedUntil = nzbLimitedUntil.get(limitKey) || 0;
+    if (limitKey && limitedUntil > Date.now()) throw nzbLimitError(indexer, limitedUntil);
     const response = await axios.get(url, {
       responseType: "arraybuffer",
       timeout: 60000,
       validateStatus: () => true,
     });
+    if (response.status === 429) {
+      const until = Date.now() + readRetryAfterMs(response.headers?.["retry-after"]);
+      if (limitKey) nzbLimitedUntil.set(limitKey, until);
+      throw nzbLimitError(indexer, until);
+    }
     if (response.status !== 200) {
       throw new Error(`The indexer did not return the NZB: HTTP ${response.status}`);
     }
     const content = Buffer.from(response.data || []);
-    if (!/<nzb[\s>]/iu.test(content.subarray(0, 65536).toString("utf8"))) {
-      throw new Error("The indexer did not return an NZB file");
+    const head = content.subarray(0, 65536).toString("utf8");
+    if (!/<nzb[\s>]/iu.test(head)) {
+      const error = new Error("The indexer did not return an NZB file");
+      error.nzbGrabSpent = !/<error[\s>]/iu.test(head);
+      throw error;
     }
     return content;
   }

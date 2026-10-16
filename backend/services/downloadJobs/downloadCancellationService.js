@@ -1,5 +1,6 @@
 import { getDownloadClient } from "../download/downloadClientSettings.js";
 import { deemixQueueIds } from "../deemixClient.js";
+import { mapWithConcurrency } from "../discovery/helpers.js";
 import {
   getHonkerQueueByName,
   listHonkerJobs,
@@ -16,6 +17,7 @@ import {
   isDownloadJobCancelled,
   isPipelinePayloadActive,
   listDownloadProviderWork,
+  listOrphanedDownloadProviderWork,
   restoreDownloadJobCancellations,
   restorePlaylistDownloadWork,
 } from "./downloadCancellation.js";
@@ -147,20 +149,20 @@ async function cancelSlskdWork(payloads, jobs, providerWork = []) {
     });
     throw new Error("slskd is not configured; tracked work cannot be cancelled");
   }
-  for (const searchId of searchIds) {
+  await mapWithConcurrency([...searchIds], 4, async (searchId) => {
     const deleted = await attemptProviderCleanup(
       failures,
       "slskd",
       "Could not cancel a removed playlist search",
       { searchId },
       async () => {
-        const result = await client.deleteSearch(searchId);
+        const result = await client.deleteSearch(searchId, { timeout: 20000 });
         if (!result) throw new Error("slskd did not confirm search cancellation");
         return result;
       },
     );
     if (deleted) clearDownloadProviderWork({ provider: "slskd-search", workId: searchId });
-  }
+  });
   for (const transfer of transfers.values()) {
     await attemptProviderCleanup(
       failures,
@@ -361,6 +363,11 @@ function refreshJobs(jobs) {
     const current = downloadTracker.getJob(job.id);
     return current ? { ...job, ...current } : job;
   });
+}
+
+export async function stopOrphanedSlskdSearches() {
+  if (!getDownloadClient("slskd")?.isConfigured?.()) return;
+  await cancelSlskdWork([], [], listOrphanedDownloadProviderWork("slskd-search"));
 }
 
 export function markDownloadWorkCancelledForJobs(jobs = []) {

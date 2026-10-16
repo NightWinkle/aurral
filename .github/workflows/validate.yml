@@ -79,6 +79,7 @@ jobs:
           npx playwright install --with-deps chromium
           npx playwright test tests/e2e/library-track-performer.spec.js
           npx playwright test tests/e2e/library-add-menu.spec.js tests/e2e/playlist-bulk-actions.spec.js
+          npx playwright test tests/e2e/local-album-artwork.spec.js
 
       - name: Print app log on failure
         if: failure()

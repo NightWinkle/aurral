@@ -460,6 +460,8 @@ db.exec(`
     ON library_media_files (source, available);
   CREATE INDEX IF NOT EXISTS idx_library_media_files_scan_id
     ON library_media_files (last_seen_scan_id);
+  CREATE INDEX IF NOT EXISTS idx_library_scan_runs_completed_at
+    ON library_scan_runs (completed_at);
 
   CREATE TABLE IF NOT EXISTS aurral_history (
     id TEXT PRIMARY KEY,

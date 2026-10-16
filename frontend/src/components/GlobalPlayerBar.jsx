@@ -32,6 +32,7 @@ const SHEET_EXIT_MS = 260;
 const SHEET_DISMISS_DISTANCE = 120;
 const SEEK_SHORTCUT_SECONDS = 5;
 function GlobalPlayerBar() {
+  const [failedArtwork, setFailedArtwork] = useState(null);
   const {
     currentTrack,
     playbackError,
@@ -220,8 +221,9 @@ function GlobalPlayerBar() {
 
   const artwork = (className, thumbnail = true) => (
     <span className={className} aria-hidden="true">
-      {currentTrack.artwork ? (
-        <ArtworkImage src={currentTrack.artwork} thumbnail={thumbnail} sizes="3rem" alt="" loading="eager" />
+      {currentTrack.artwork && currentTrack.artwork !== failedArtwork ? (
+        <ArtworkImage src={currentTrack.artwork} thumbnail={thumbnail} sizes="3rem" alt="" loading="eager"
+          onError={() => setFailedArtwork(currentTrack.artwork)} />
       ) : (
         <Music />
       )}

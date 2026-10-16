@@ -299,8 +299,10 @@ const entityMatches = (entity, query) => {
 };
 
 function Cover({ src, label, round = false, compact = false, thumbnail = true }) {
-  if (src) {
-    return <ArtworkImage src={src} thumbnail={thumbnail} alt="" loading="lazy" decoding="async" />;
+  const [failedSrc, setFailedSrc] = useState(null);
+  if (src && src !== failedSrc) {
+    return <ArtworkImage src={src} thumbnail={thumbnail} alt="" loading="lazy" decoding="async"
+      onError={() => setFailedSrc(src)} />;
   }
 
   return (
@@ -1600,7 +1602,11 @@ function LibraryPage() {
   }, [coverItems]);
 
   const getAlbumCover = useCallback(
-    (album) => album?.coverUrl || covers[getAlbumCoverId(album)] || "",
+    (album) => {
+      const url = album?.coverUrl || covers[getAlbumCoverId(album)] || "";
+      return url.startsWith("/api/library/albums/")
+        ? buildAuthenticatedApiUrl(url.replace(/^\/api/, "")) : url;
+    },
     [covers],
   );
   const [artistHeroImage, setArtistHeroImage] = useState(null);
